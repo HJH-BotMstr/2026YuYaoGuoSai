@@ -16,3 +16,7 @@
 - 仓库已初始化，完成首次提交。
 - 由于当前在 Windows 环境下，尚未安装 `colcon`，暂不做构建。
 - 后续将在 `lite3_ws/src/` 中逐步添加功能包并完善 `README.md` 与 `TODO.md`。
+
+## 如何贡献
+
+本仓库在早期阶段采用 Pull Request 工作流。请所有合作者先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，了解分支命名、提交规范与 PR 流程。
