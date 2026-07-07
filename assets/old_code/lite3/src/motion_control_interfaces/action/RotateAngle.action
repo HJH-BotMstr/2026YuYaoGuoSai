@@ -1,0 +1,8 @@
+# Rotate in place. Positive angle = counter-clockwise (left).
+float32 angle   # radians
+---
+bool   success
+string message
+---
+float32 remaining_angle
+float32 current_yaw

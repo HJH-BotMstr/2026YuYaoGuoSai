@@ -1,0 +1,14 @@
+# Move to a pose relative to the robot's pose when the action starts.
+# +x = forward, +y = left, +yaw = counter-clockwise.
+float32 x     # meters
+float32 y     # meters
+float32 yaw   # radians
+---
+bool   success
+string message
+---
+float32 remaining_distance
+float32 remaining_angle
+float32 current_x
+float32 current_y
+float32 current_yaw

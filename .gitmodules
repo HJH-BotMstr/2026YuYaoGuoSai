@@ -1,0 +1,3 @@
+[submodule "assets/old_code/DeepRobotDog"]
+	path = assets/old_code/DeepRobotDog
+	url = https://github.com/WanliZhong/DeepRobotDog

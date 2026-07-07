@@ -1,0 +1,25 @@
+<package format="3">
+  <name>motion_test</name>
+  <version>0.2.0</version>
+  <description>Closed-loop motion driver and action server for Lite3 quadruped.</description>
+  <maintainer email="ysc@example.com">YSC Team</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>action_msgs</depend>
+  <depend>motion_control_interfaces</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

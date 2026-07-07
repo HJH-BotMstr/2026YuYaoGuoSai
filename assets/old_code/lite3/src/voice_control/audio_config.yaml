@@ -1,0 +1,7 @@
+card: 3
+device: 0
+# 以下二选一：播放文件 或 文字转语音
+file: "/home/pi/love.mp3"
+# text: "你好，这是自定义播放内容"
+lang: "zh"
+speed: 160

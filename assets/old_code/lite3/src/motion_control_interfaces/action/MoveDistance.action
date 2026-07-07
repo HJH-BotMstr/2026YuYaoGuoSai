@@ -1,0 +1,10 @@
+# Move forward (+) or backward (-) along the starting heading.
+float32 distance   # meters
+---
+bool   success
+string message
+---
+float32 remaining_distance
+float32 current_x
+float32 current_y
+float32 current_yaw

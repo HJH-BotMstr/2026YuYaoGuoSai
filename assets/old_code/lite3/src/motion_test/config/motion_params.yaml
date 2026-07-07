@@ -1,0 +1,29 @@
+lite3_driver_node:
+  ros__parameters:
+    robot_ip: "192.168.1.120"
+    robot_port: 43893
+    heartbeat_period: 0.5
+    cmd_timeout: 0.5
+    manual_override_timeout: 1.5
+    odom_frame_id: "odom"
+    base_frame_id: "base_link"
+
+motion_action_server:
+  ros__parameters:
+    control_rate: 25.0
+    max_vel_x: 0.3
+    max_vel_y: 0.2
+    max_vel_yaw: 0.5
+    min_vel_x: 0.05
+    min_vel_yaw: 0.05
+    kp_dist: 1.0
+    kp_yaw: 2.0
+    kp_lateral: 1.0
+    dist_threshold: 0.05
+    yaw_threshold: 0.08
+    lateral_threshold: 0.03
+    stale_odom_timeout: 0.3
+    action_timeout_factor: 2.0
+    max_action_timeout: 30.0
+    cmd_vel_auto_topic: "/cmd_vel_auto"
+    cmd_gait_topic: "/cmd_gait"
