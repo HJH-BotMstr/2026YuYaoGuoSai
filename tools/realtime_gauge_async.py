@@ -156,12 +156,18 @@ class AsyncGaugeProcessor:
         if self.cap is None or not self.cap.isOpened():
             raise RuntimeError("无法打开摄像头")
 
-        preheat_camera(self.cap, frames=80)
+        preheat_camera(self.cap, frames=120)
 
         self.latest_frame = None      # 最新的摄像头帧
         self.last_state = None        # 最近一次识别结果
         self.running = True
         self.process_interval = process_interval
+
+        # 新增：摄像头就绪标志与处理中标志
+        self.camera_ready = threading.Event()
+        self.frames_captured = 0
+        self.min_ready_frames = 100
+        self.is_processing = False
 
         self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.process_thread = threading.Thread(target=self._process_loop, daemon=True)
@@ -177,24 +183,35 @@ class AsyncGaugeProcessor:
             ok, frame = clear_buffer(self.cap)
             if ok:
                 self.latest_frame = frame
+                self.frames_captured += 1
+                if self.frames_captured >= self.min_ready_frames:
+                    self.camera_ready.set()
             time.sleep(0.001)
 
     # ------------------------------------------------------------------
     # 线程2：定时处理一帧做识别（低频率，避免卡顿）
     # ------------------------------------------------------------------
     def _process_loop(self):
+        # 等待摄像头捕获足够多帧后再开始识别
+        self.camera_ready.wait(timeout=10.0)
+        if not self.camera_ready.is_set():
+            print("\n警告：摄像头长时间未就绪")
+
         while self.running:
-            if self.latest_frame is None:
+            if self.latest_frame is None or self.is_processing:
                 time.sleep(0.05)
                 continue
 
             frame = self.latest_frame.copy()
+            self.is_processing = True
             try:
                 state = self._process_frame(frame)
                 if state is not None:
                     self.last_state = state
             except Exception as e:
                 print(f"\n识别失败: {e}")
+            finally:
+                self.is_processing = False
 
             time.sleep(self.process_interval)
 
@@ -202,30 +219,61 @@ class AsyncGaugeProcessor:
     # 识别逻辑：完全复用 realtime_gauge.py 的函数，不做任何修改
     # ------------------------------------------------------------------
     def _process_frame(self, frame):
+        t0 = time.time()
+
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        t1 = time.time()
+
         circle = detect_circle(gray)
+        t2 = time.time()
         if not circle:
+            print(f"\n  未检测到圆，总耗时 {(t2 - t0) * 1000:.1f}ms")
             return None
 
         cx, cy, r = circle
         roi = extract_roi(frame, cx, cy, r)
+        t3 = time.time()
+
         roi_enh = enhance_roi(roi)
+        t4 = time.time()
+
         cc = lab_threshold_centers(roi_enh)
+        t5 = time.time()
 
         if "red" not in cc:
+            print(f"\n  无红色区域，总耗时 {(t5 - t0) * 1000:.1f}ms")
             return None
 
         up_angle = compute_up(cc["red"])
+        t6 = time.time()
+
         gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         gray_roi = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray_roi)
+        t7 = time.time()
+
         ptr_angle = detect_ptr(polar_unwrap(gray_roi))
+        t8 = time.time()
 
         status, tag = classify(ptr_angle, up_angle)
+        t9 = time.time()
 
         # 新增：识别仪表盘上方字母
         letter = recognize_letter(frame, cx, cy, r)
+        t10 = time.time()
 
-        print(f"\r  {status}  ptr={ptr_angle:.1f} deg up={up_angle:.1f} deg letter={letter}", end="")
+        print(
+            f"\n  耗时(ms): gray={(t1 - t0) * 1000:.1f}  "
+            f"detect_circle={(t2 - t1) * 1000:.1f}  "
+            f"extract_roi={(t3 - t2) * 1000:.1f}  "
+            f"enhance={(t4 - t3) * 1000:.1f}  "
+            f"lab_threshold={(t5 - t4) * 1000:.1f}  "
+            f"compute_up={(t6 - t5) * 1000:.1f}  "
+            f"clahe={(t7 - t6) * 1000:.1f}  "
+            f"ptr={(t8 - t7) * 1000:.1f}  "
+            f"classify={(t9 - t8) * 1000:.1f}  "
+            f"letter={(t10 - t9) * 1000:.1f}  "
+            f"TOTAL={(t10 - t0) * 1000:.1f}"
+        )
 
         return {
             'cx': cx, 'cy': cy, 'r': r,
