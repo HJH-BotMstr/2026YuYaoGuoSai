@@ -77,6 +77,18 @@ def quaternion_multiply(q1, q2):
     return q_out
 
 
+def quaternion_to_z_angle(q):
+    """Return signed rotation angle (rad) of a unit quaternion about Z.
+
+    Equivalent to the shortest rotation from identity to q.  Works without
+    extracting yaw and keeps the result in [-pi, pi].
+    """
+    norm = math.sqrt(q.w * q.w + q.z * q.z)
+    if norm < 1e-9:
+        return 0.0
+    return 2.0 * math.atan2(q.z / norm, q.w / norm)
+
+
 def _clamp(value, limit):
     return max(-abs(limit), min(abs(limit), value))
 
@@ -101,11 +113,12 @@ class YawController(Node):
         self.declare_parameter("cmd_vel_topic", "/cmd_vel_auto")
         self.declare_parameter("cmd_gait_topic", "/cmd_gait")
         self.declare_parameter("gait", "slow")
-        self.declare_parameter("kp", 2.0)
+        self.declare_parameter("kp", 1.5)
         self.declare_parameter("ki", 0.0)
+        self.declare_parameter("kd", 0.2)
         self.declare_parameter("max_vel_yaw", 0.5)
-        self.declare_parameter("min_vel_yaw", 0.05)
-        self.declare_parameter("yaw_threshold", 0.08)
+        self.declare_parameter("min_vel_yaw", 0.0)
+        self.declare_parameter("yaw_threshold", 0.06)
         self.declare_parameter("control_rate", 25.0)
         self.declare_parameter("stale_odom_timeout", 0.3)
 
@@ -114,6 +127,7 @@ class YawController(Node):
         self.gait = self.get_parameter("gait").value
         self.kp = self.get_parameter("kp").value
         self.ki = self.get_parameter("ki").value
+        self.kd = self.get_parameter("kd").value
         self.max_vel_yaw = self.get_parameter("max_vel_yaw").value
         self.min_vel_yaw = self.get_parameter("min_vel_yaw").value
         self.yaw_threshold = self.get_parameter("yaw_threshold").value
@@ -129,6 +143,7 @@ class YawController(Node):
         self._saturated = False
         self._last_error = 0.0
         self._last_omega = 0.0
+        self._current_omega = 0.0
         self._shutdown = False
         self._last_odom_time = None
         self._emergency = False
@@ -162,6 +177,7 @@ class YawController(Node):
         q = msg.pose.pose.orientation
         with self._lock:
             self._q_current = q
+            self._current_omega = msg.twist.twist.angular.z
             self._last_odom_time = self.get_clock().now()
             if self._q_origin is None:
                 self._q_origin = q
@@ -221,8 +237,10 @@ class YawController(Node):
         self._source = "auto"
 
     def _compute_omega(self, q_current, q_target):
+        # Closed-loop error as a quaternion rotation: q_error = q_target * conj(q_current)
         q_error = quaternion_multiply(q_target, quaternion_conjugate(q_current))
-        e = yaw_from_quaternion(q_error)
+        # Signed rotation angle of that quaternion in [-pi, pi]
+        e = quaternion_to_z_angle(q_error)
 
         dt = 1.0 / self.control_rate
         omega = 0.0
@@ -235,12 +253,18 @@ class YawController(Node):
                 self._last_omega = 0.0
         else:
             with self._lock:
+                # Conditional integration anti-windup
                 if self.ki > 0.0 and not self._saturated:
                     self._integral += self.ki * e * dt
                     int_max = self.max_vel_yaw / self.ki
                     self._integral = max(-int_max, min(int_max, self._integral))
 
-                omega_raw = self.kp * e + self.ki * self._integral
+                # PI-D: derivative term damps the measured yaw rate
+                omega_raw = (
+                    self.kp * e
+                    + self.ki * self._integral
+                    - self.kd * self._current_omega
+                )
                 omega_clamped = _clamp(omega_raw, self.max_vel_yaw)
                 self._saturated = abs(omega_raw) >= self.max_vel_yaw
                 omega = _apply_min(omega_clamped, self.min_vel_yaw, self.max_vel_yaw)
@@ -346,14 +370,16 @@ class YawController(Node):
 
         self._clear_screen()
         print("=" * 55)
-        print("  交互式 PI 偏航控制器")
+        print("  交互式 PI-D 偏航控制器")
         print("=" * 55)
+        print(f"  参数     : Kp={self.kp}  Ki={self.ki}  Kd={self.kd}")
         print(f"  原点 yaw : {origin_yaw:>10.2f}°")
         print(f"  当前 yaw : {current_yaw:>10.2f}°")
         print(f"  目标 yaw : {target_yaw:>10.2f}°")
         print(f"  误差     : {math.degrees(e):>10.2f}°")
         print(f"  积分项   : {integral:>10.4f}")
-        print(f"  角速度指令: {omega:>10.4f} rad/s")
+        print(f"  当前角速度: {self._current_omega:>9.4f} rad/s")
+        print(f"  角速度指令: {omega:>9.4f} rad/s")
         print(f"  速度来源 : {self._source}")
         print("=" * 55)
         print(HELP_TEXT)
