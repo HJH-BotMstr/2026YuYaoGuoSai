@@ -102,11 +102,11 @@ def recognize_letter(frame, cx, cy, r):
 
     h, w = frame.shape[:2]
 
-    # 截取圆上方区域：圆心上方 0.3r ~ 1.5r 处，左右各 r 宽度
-    x1 = max(0, int(cx - r))
-    y1 = max(0, int(cy - 1.5 * r))
-    x2 = min(w, int(cx + r))
-    y2 = max(0, int(cy - 0.3 * r))
+    # 截取圆上方区域：圆心上方 1r ~ 3r 处（字母实际位置），左右各 1.5r 宽度
+    x1 = max(0, int(cx - 1.5 * r))
+    y1 = max(0, int(cy - 3.0 * r))
+    x2 = min(w, int(cx + 1.5 * r))
+    y2 = max(0, int(cy - 1.0 * r))
 
     if y2 <= y1 or x2 <= x1:
         return None
