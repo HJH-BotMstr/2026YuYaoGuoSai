@@ -17,6 +17,7 @@ import math
 import threading
 import time
 import subprocess
+import numpy as np
 
 try:
     import pytesseract
@@ -139,6 +140,58 @@ def recognize_letter(frame, cx, cy, r):
 
 
 # ============================================================================
+# 以下为新增函数：快速霍夫圆检测（在原图缩小后检测，再放大坐标）
+# ============================================================================
+
+def detect_circle_fast(gray, scale=0.5):
+    """
+    对灰度图先缩放再调用 HoughCircles，显著提升 Jetson 上的速度。
+    找到圆后把坐标和半径按 scale 反推回原始图像。
+    如果检测失败返回 None。
+    """
+    h, w = gray.shape
+    small = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    smooth = cv2.bilateralFilter(clahe.apply(small), 9, 75, 75)
+    edges = cv2.Canny(smooth, 40, 120)
+
+    # 在缩放图上合理的半径范围（原图半径约 50~240，缩放后除以 scale）
+    min_r_scaled = max(15, int(40 * scale))
+    max_r_scaled = int(250 * scale)
+
+    # 只保留几组参数策略，减少重复调用
+    strategies = [
+        (80, 30, True),   # edges
+        (60, 25, False),  # smooth
+        (100, 35, True),  # edges
+    ]
+
+    all_circles = []
+    for p1, p2, use_edges in strategies:
+        src = edges if use_edges else smooth
+        circles = cv2.HoughCircles(
+            src, cv2.HOUGH_GRADIENT, dp=1,
+            minDist=max(small.shape),
+            param1=p1, param2=p2,
+            minRadius=min_r_scaled,
+            maxRadius=max_r_scaled
+        )
+        if circles is not None:
+            for c in circles[0]:
+                all_circles.append((float(c[0]), float(c[1]), float(c[2])))
+
+    if not all_circles:
+        return None
+
+    radii = [c[2] for c in all_circles]
+    cx, cy, r = min(all_circles, key=lambda c: abs(c[2] - float(np.median(radii))))
+
+    # 把坐标放大回原始图像
+    return (cx / scale, cy / scale, r / scale)
+
+
+# ============================================================================
 # 以下为新增类：多线程识别器
 # ============================================================================
 
@@ -166,8 +219,13 @@ class AsyncGaugeProcessor:
         # 新增：摄像头就绪标志与处理中标志
         self.camera_ready = threading.Event()
         self.frames_captured = 0
-        self.min_ready_frames = 100
+        self.min_ready_frames = 30
         self.is_processing = False
+
+        # 新增：字母识别跳帧计数
+        self.frame_count = 0
+        self.letter_skip = 5
+        self.last_letter = None
 
         self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.process_thread = threading.Thread(target=self._process_loop, daemon=True)
@@ -186,6 +244,8 @@ class AsyncGaugeProcessor:
                 self.frames_captured += 1
                 if self.frames_captured >= self.min_ready_frames:
                     self.camera_ready.set()
+            else:
+                time.sleep(0.01)
             time.sleep(0.001)
 
     # ------------------------------------------------------------------
@@ -216,7 +276,7 @@ class AsyncGaugeProcessor:
             time.sleep(self.process_interval)
 
     # ------------------------------------------------------------------
-    # 识别逻辑：完全复用 realtime_gauge.py 的函数，不做任何修改
+    # 识别逻辑：复用 realtime_gauge.py 的函数，圆检测用快速版
     # ------------------------------------------------------------------
     def _process_frame(self, frame):
         t0 = time.time()
@@ -224,10 +284,16 @@ class AsyncGaugeProcessor:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         t1 = time.time()
 
-        circle = detect_circle(gray)
+        # 先用快速圆检测；失败再回退到原来的 detect_circle
+        circle = detect_circle_fast(gray, scale=0.5)
+        detector_name = "fast"
         t2 = time.time()
         if not circle:
-            print(f"\n  未检测到圆，总耗时 {(t2 - t0) * 1000:.1f}ms")
+            circle = detect_circle(gray)
+            detector_name = "slow"
+            t2 = time.time()
+        if not circle:
+            print(f"\n  未检测到圆（fast+slow），总耗时 {(t2 - t0) * 1000:.1f}ms")
             return None
 
         cx, cy, r = circle
@@ -257,13 +323,19 @@ class AsyncGaugeProcessor:
         status, tag = classify(ptr_angle, up_angle)
         t9 = time.time()
 
-        # 新增：识别仪表盘上方字母
-        letter = recognize_letter(frame, cx, cy, r)
+        # 字母识别跳帧：每 letter_skip 帧识别一次，其余帧复用上次结果
+        self.frame_count += 1
+        if self.frame_count % self.letter_skip == 0:
+            letter = recognize_letter(frame, cx, cy, r)
+            if letter is not None:
+                self.last_letter = letter
+        else:
+            letter = self.last_letter
         t10 = time.time()
 
         print(
             f"\n  耗时(ms): gray={(t1 - t0) * 1000:.1f}  "
-            f"detect_circle={(t2 - t1) * 1000:.1f}  "
+            f"detect_circle[{detector_name}]={(t2 - t1) * 1000:.1f}  "
             f"extract_roi={(t3 - t2) * 1000:.1f}  "
             f"enhance={(t4 - t3) * 1000:.1f}  "
             f"lab_threshold={(t5 - t4) * 1000:.1f}  "
@@ -271,7 +343,7 @@ class AsyncGaugeProcessor:
             f"clahe={(t7 - t6) * 1000:.1f}  "
             f"ptr={(t8 - t7) * 1000:.1f}  "
             f"classify={(t9 - t8) * 1000:.1f}  "
-            f"letter={(t10 - t9) * 1000:.1f}  "
+            f"letter(skip={self.frame_count % self.letter_skip != 0})={(t10 - t9) * 1000:.1f}  "
             f"TOTAL={(t10 - t0) * 1000:.1f}"
         )
 
