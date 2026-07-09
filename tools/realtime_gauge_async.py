@@ -140,13 +140,43 @@ def recognize_letter(frame, cx, cy, r):
 
 
 # ============================================================================
+# 以下为新增函数：圆检测颜色验证
+# ============================================================================
+
+def _validate_circle_by_color(frame_bgr, cx, cy, r, min_ratio=0.03):
+    """
+    粗略验证：圆的外接正方形区域内，红/黄色像素占比是否足够。
+    用于排除误检到背景圆形物体的假圆。
+    """
+    h, w = frame_bgr.shape[:2]
+    x1 = max(0, int(cx - r))
+    y1 = max(0, int(cy - r))
+    x2 = min(w, int(cx + r))
+    y2 = min(h, int(cy + r))
+    if x2 <= x1 or y2 <= y1:
+        return False
+
+    roi = frame_bgr[y1:y2, x1:x2]
+    lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
+    red_mask = cv2.inRange(lab, np.array([0, 135, 73]), np.array([255, 211, 199]))
+    yellow_mask = cv2.inRange(lab, np.array([0, 71, 145]), np.array([255, 175, 225]))
+
+    total = roi.shape[0] * roi.shape[1]
+    if total == 0:
+        return False
+    colored = cv2.countNonZero(red_mask) + cv2.countNonZero(yellow_mask)
+    return (colored / total) >= min_ratio
+
+
+# ============================================================================
 # 以下为新增函数：快速霍夫圆检测（在原图缩小后检测，再放大坐标）
 # ============================================================================
 
-def detect_circle_fast(gray, scale=0.5):
+def detect_circle_fast(gray, frame_bgr=None, scale=0.5):
     """
     对灰度图先缩放再调用 HoughCircles，显著提升 Jetson 上的速度。
     找到圆后把坐标和半径按 scale 反推回原始图像。
+    如果 frame_bgr 不为空，会对候选圆做颜色验证，优先返回包含红/黄色像素的圆。
     如果检测失败返回 None。
     """
     h, w = gray.shape
@@ -185,10 +215,25 @@ def detect_circle_fast(gray, scale=0.5):
         return None
 
     radii = [c[2] for c in all_circles]
-    cx, cy, r = min(all_circles, key=lambda c: abs(c[2] - float(np.median(radii))))
+    median_r = float(np.median(radii))
 
-    # 把坐标放大回原始图像
-    return (cx / scale, cy / scale, r / scale)
+    # 按半径接近中位数排序，优先选“最常见大小”的圆
+    sorted_circles = sorted(all_circles, key=lambda c: abs(c[2] - median_r))
+
+    # 颜色验证：优先返回包含红/黄色像素的圆
+    if frame_bgr is not None:
+        for c in sorted_circles:
+            cx = c[0] / scale
+            cy = c[1] / scale
+            r = c[2] / scale
+            if _validate_circle_by_color(frame_bgr, cx, cy, r):
+                return (cx, cy, r)
+        # 都验证失败时回退到最接近中位数的候选
+        c = sorted_circles[0]
+        return (c[0] / scale, c[1] / scale, c[2] / scale)
+
+    c = min(all_circles, key=lambda c: abs(c[2] - median_r))
+    return (c[0] / scale, c[1] / scale, c[2] / scale)
 
 
 # ============================================================================
@@ -285,7 +330,7 @@ class AsyncGaugeProcessor:
         t1 = time.time()
 
         # 先用快速圆检测；失败再回退到原来的 detect_circle
-        circle = detect_circle_fast(gray, scale=0.5)
+        circle = detect_circle_fast(gray, frame_bgr=frame, scale=0.5)
         detector_name = "fast"
         t2 = time.time()
         if not circle:
@@ -334,7 +379,8 @@ class AsyncGaugeProcessor:
         t10 = time.time()
 
         print(
-            f"\n  耗时(ms): gray={(t1 - t0) * 1000:.1f}  "
+            f"\n  圆: r={r:.1f} | "
+            f"耗时(ms): gray={(t1 - t0) * 1000:.1f}  "
             f"detect_circle[{detector_name}]={(t2 - t1) * 1000:.1f}  "
             f"extract_roi={(t3 - t2) * 1000:.1f}  "
             f"enhance={(t4 - t3) * 1000:.1f}  "
