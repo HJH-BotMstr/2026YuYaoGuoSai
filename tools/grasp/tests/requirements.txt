@@ -1,0 +1,11 @@
+#test
+
+cd /home/fishros/2026YuYaoGuoSai/lite3_ws/src/grasp
+python3 /home/fishros/2026YuYaoGuoSai/lite3_ws/src/pc_test_arm_ik.py
+
+python3 tests/test_arm_grasp.py --mode pose
+
+python3 tests/test_arm_grasp.py --mode gripper
+
+python3 tests/test_arm_grasp.py --mode grasp --dis 220 --height 25
+
