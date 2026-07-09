@@ -4,7 +4,8 @@
 """Standalone Lite3 driver (no motion_test package needed).
 
 Subscribes to /cmd_vel, /cmd_vel_auto, /cmd_gait, /emergency_stop and talks to
-the robot directly over UDP.  Publishes /leg_odom2 and /driver_status.
+the robot directly over UDP.  Publishes /leg_odom2, /driver_status and,
+when sonar_enable is true, /ultrasonic/front and /ultrasonic/rear.
 """
 
 import math
@@ -16,6 +17,7 @@ import rclpy
 from geometry_msgs.msg import Quaternion, Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
+from sensor_msgs.msg import Range
 from std_msgs.msg import Bool, String
 
 
@@ -48,6 +50,19 @@ class Lite3DriverNode(Node):
         self.declare_parameter("odom_frame_id", "odom")
         self.declare_parameter("base_frame_id", "base_link")
 
+        # Ultrasonic parameters
+        self.declare_parameter("sonar_enable", False)
+        self.declare_parameter("sonar_front_index", 18)
+        self.declare_parameter("sonar_rear_index", 19)
+        self.declare_parameter("sonar_byte_offset", -1)
+        self.declare_parameter("sonar_scale", 1.0)
+        self.declare_parameter("sonar_min_valid", 0.02)
+        self.declare_parameter("sonar_max_valid", 5.0)
+        self.declare_parameter("sonar_fov", 0.3)
+        self.declare_parameter("sonar_frame_front", "sonar_front_link")
+        self.declare_parameter("sonar_frame_rear", "sonar_rear_link")
+        self.declare_parameter("sonar_debug", False)
+
         self.robot_ip = self.get_parameter("robot_ip").value
         self.robot_port = self.get_parameter("robot_port").value
         self.heartbeat_period = self.get_parameter("heartbeat_period").value
@@ -57,6 +72,21 @@ class Lite3DriverNode(Node):
         ).value
         self.odom_frame_id = self.get_parameter("odom_frame_id").value
         self.base_frame_id = self.get_parameter("base_frame_id").value
+
+        # Ultrasonic state
+        self.sonar_enable = self.get_parameter("sonar_enable").value
+        self.sonar_front_index = self.get_parameter("sonar_front_index").value
+        self.sonar_rear_index = self.get_parameter("sonar_rear_index").value
+        self.sonar_byte_offset = self.get_parameter("sonar_byte_offset").value
+        self.sonar_scale = self.get_parameter("sonar_scale").value
+        self.sonar_min_valid = self.get_parameter("sonar_min_valid").value
+        self.sonar_max_valid = self.get_parameter("sonar_max_valid").value
+        self.sonar_fov = self.get_parameter("sonar_fov").value
+        self.sonar_frame_front = self.get_parameter("sonar_frame_front").value
+        self.sonar_frame_rear = self.get_parameter("sonar_frame_rear").value
+        self.sonar_debug = self.get_parameter("sonar_debug").value
+        self._last_sonar_raw_data = None
+        self._last_sonar_debug_time = self.get_clock().now()
 
         # Velocity sources
         self.manual_vel = Twist()
@@ -78,6 +108,15 @@ class Lite3DriverNode(Node):
         # Publishers
         self.odom_pub = self.create_publisher(Odometry, "/leg_odom2", 10)
         self.status_pub = self.create_publisher(String, "/driver_status", 10)
+        if self.sonar_enable:
+            self.sonar_front_pub = self.create_publisher(
+                Range, "/ultrasonic/front", 10
+            )
+            self.sonar_rear_pub = self.create_publisher(
+                Range, "/ultrasonic/rear", 10
+            )
+            if self.sonar_debug:
+                self.create_timer(0.5, self._sonar_debug_cb)
 
         # Subscribers
         self.create_subscription(Twist, "/cmd_vel", self.cmd_vel_callback, 10)
@@ -201,8 +240,91 @@ class Lite3DriverNode(Node):
                 odom.twist.twist.angular.z = vel_yaw
 
                 self.odom_pub.publish(odom)
+
+                if self.sonar_enable:
+                    self._publish_sonar(data)
+                if self.sonar_debug:
+                    self._last_sonar_raw_data = data
         except (BlockingIOError, socket.error):
             pass
+
+    # ------------------------------------------------------------------
+    # Ultrasonic handling
+    # ------------------------------------------------------------------
+    def _publish_sonar(self, data):
+        front, rear = self._extract_sonar(data)
+        now = self.get_clock().now().to_msg()
+
+        front_msg = Range()
+        front_msg.header.stamp = now
+        front_msg.header.frame_id = self.sonar_frame_front
+        front_msg.radiation_type = Range.ULTRASOUND
+        front_msg.field_of_view = float(self.sonar_fov)
+        front_msg.min_range = float(self.sonar_min_valid)
+        front_msg.max_range = float(self.sonar_max_valid)
+        front_msg.range = float(front)
+
+        rear_msg = Range()
+        rear_msg.header.stamp = now
+        rear_msg.header.frame_id = self.sonar_frame_rear
+        rear_msg.radiation_type = Range.ULTRASOUND
+        rear_msg.field_of_view = float(self.sonar_fov)
+        rear_msg.min_range = float(self.sonar_min_valid)
+        rear_msg.max_range = float(self.sonar_max_valid)
+        rear_msg.range = float(rear)
+
+        self.sonar_front_pub.publish(front_msg)
+        self.sonar_rear_pub.publish(rear_msg)
+
+    def _extract_sonar(self, data):
+        try:
+            if self.sonar_byte_offset >= 0:
+                front, rear = struct.unpack_from(
+                    "<2d", data, self.sonar_byte_offset
+                )
+            else:
+                count = max(self.sonar_front_index, self.sonar_rear_index) + 1
+                body = struct.unpack_from(f"<{count}d", data, 20)
+                front = body[self.sonar_front_index]
+                rear = body[self.sonar_rear_index]
+        except struct.error as e:
+            self.get_logger().warning(f"Failed to parse sonar data: {e}")
+            return float("inf"), float("inf")
+
+        front = front * self.sonar_scale
+        rear = rear * self.sonar_scale
+        front = self._validate_sonar(front)
+        rear = self._validate_sonar(rear)
+        return front, rear
+
+    def _validate_sonar(self, value):
+        if math.isnan(value) or math.isinf(value):
+            return float("inf")
+        if value < self.sonar_min_valid or value > self.sonar_max_valid:
+            return float("inf")
+        return value
+
+    def _sonar_debug_cb(self):
+        now = self.get_clock().now()
+        if (now - self._last_sonar_debug_time).nanoseconds / 1e9 < 0.5:
+            return
+        self._last_sonar_debug_time = now
+
+        data = self._last_sonar_raw_data
+        if data is None:
+            self.get_logger().info("SONAR_DEBUG: no raw data yet")
+            return
+
+        self.get_logger().info(f"SONAR_DEBUG: packet_len={len(data)}")
+        try:
+            # Print first N doubles to help locate ultrasound fields.
+            count = min(30, (len(data) - 20) // 8)
+            body = struct.unpack_from(f"<{count}d", data, 20)
+            parts = [f"[{i:2d}]={v:.3f}" for i, v in enumerate(body)]
+            for i in range(0, len(parts), 5):
+                self.get_logger().info("SONAR_DEBUG: " + "  ".join(parts[i:i+5]))
+        except struct.error as e:
+            self.get_logger().warning(f"SONAR_DEBUG: unpack error {e}")
 
     # ------------------------------------------------------------------
     # Status diagnostics
