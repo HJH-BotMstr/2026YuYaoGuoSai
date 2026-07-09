@@ -4,8 +4,8 @@
 """Standalone Lite3 driver (no motion_test package needed).
 
 Subscribes to /cmd_vel, /cmd_vel_auto, /cmd_gait, /emergency_stop and talks to
-the robot directly over UDP.  Publishes /leg_odom2, /driver_status, and
-optionally /ultrasonic/front + /ultrasonic/back parsed from the 0x0901 packet.
+the robot directly over UDP.  Publishes /leg_odom2, /driver_status and,
+when sonar_enable is true, /ultrasonic/front and /ultrasonic/rear.
 """
 
 import math
@@ -30,21 +30,6 @@ def quaternion_from_yaw(yaw):
     return q
 
 
-def build_range(frame_id, stamp, dist, max_range=5.0):
-    msg = Range()
-    msg.header.stamp = stamp
-    msg.header.frame_id = frame_id
-    msg.radiation_type = Range.ULTRASOUND
-    msg.field_of_view = 0.5
-    msg.min_range = 0.05
-    msg.max_range = max_range
-    if dist is None or dist < msg.min_range or dist > max_range:
-        msg.range = max_range
-    else:
-        msg.range = dist
-    return msg
-
-
 class Lite3DriverNode(Node):
     GAIT_CMDS = {
         "slow": 0x21010300,
@@ -57,7 +42,6 @@ class Lite3DriverNode(Node):
     def __init__(self):
         super().__init__("lite3_driver_node")
 
-        # 网络/控制参数
         self.declare_parameter("robot_ip", "192.168.1.120")
         self.declare_parameter("robot_port", 43893)
         self.declare_parameter("heartbeat_period", 0.5)
@@ -66,16 +50,18 @@ class Lite3DriverNode(Node):
         self.declare_parameter("odom_frame_id", "odom")
         self.declare_parameter("base_frame_id", "base_link")
 
-        # 超声波参数
-        self.declare_parameter("ultrasound_front_index", -1)   # 0x0901 double 数组索引，-1 禁用
-        self.declare_parameter("ultrasound_back_index", -1)
-        self.declare_parameter("ultrasound_unit_scale", 1.0)   # raw -> 米
-        self.declare_parameter("ultrasound_max_range", 5.0)
-        self.declare_parameter("ultrasound_timeout", 0.5)
-        self.declare_parameter("obstacle_stop_distance", 0.2)
-        self.declare_parameter("ultrasound_front_topic", "/ultrasonic/front")
-        self.declare_parameter("ultrasound_back_topic", "/ultrasonic/back")
-        self.declare_parameter("ultrasound_debug", False)
+        # Ultrasonic parameters
+        self.declare_parameter("sonar_enable", False)
+        self.declare_parameter("sonar_front_index", 18)
+        self.declare_parameter("sonar_rear_index", 19)
+        self.declare_parameter("sonar_byte_offset", -1)
+        self.declare_parameter("sonar_scale", 1.0)
+        self.declare_parameter("sonar_min_valid", 0.02)
+        self.declare_parameter("sonar_max_valid", 5.0)
+        self.declare_parameter("sonar_fov", 0.3)
+        self.declare_parameter("sonar_frame_front", "sonar_front_link")
+        self.declare_parameter("sonar_frame_rear", "sonar_rear_link")
+        self.declare_parameter("sonar_debug", False)
 
         self.robot_ip = self.get_parameter("robot_ip").value
         self.robot_port = self.get_parameter("robot_port").value
@@ -87,28 +73,28 @@ class Lite3DriverNode(Node):
         self.odom_frame_id = self.get_parameter("odom_frame_id").value
         self.base_frame_id = self.get_parameter("base_frame_id").value
 
-        self.front_index = self.get_parameter("ultrasound_front_index").value
-        self.back_index = self.get_parameter("ultrasound_back_index").value
-        self.us_scale = self.get_parameter("ultrasound_unit_scale").value
-        self.us_max_range = self.get_parameter("ultrasound_max_range").value
-        self.us_timeout = self.get_parameter("ultrasound_timeout").value
-        self.obs_dist = self.get_parameter("obstacle_stop_distance").value
-        self.us_debug = self.get_parameter("ultrasound_debug").value
+        # Ultrasonic state
+        self.sonar_enable = self.get_parameter("sonar_enable").value
+        self.sonar_front_index = self.get_parameter("sonar_front_index").value
+        self.sonar_rear_index = self.get_parameter("sonar_rear_index").value
+        self.sonar_byte_offset = self.get_parameter("sonar_byte_offset").value
+        self.sonar_scale = self.get_parameter("sonar_scale").value
+        self.sonar_min_valid = self.get_parameter("sonar_min_valid").value
+        self.sonar_max_valid = self.get_parameter("sonar_max_valid").value
+        self.sonar_fov = self.get_parameter("sonar_fov").value
+        self.sonar_frame_front = self.get_parameter("sonar_frame_front").value
+        self.sonar_frame_rear = self.get_parameter("sonar_frame_rear").value
+        self.sonar_debug = self.get_parameter("sonar_debug").value
+        self._last_sonar_raw_data = None
+        self._last_sonar_debug_time = self.get_clock().now()
 
-        # 速度源
+        # Velocity sources
         self.manual_vel = Twist()
         self.auto_vel = Twist()
         self.last_manual_time = self.get_clock().now()
         self.last_auto_time = self.get_clock().now()
         self.emergency_stop = False
         self.out_vel = Twist()
-
-        # 超声波状态
-        self.front_dist = None
-        self.back_dist = None
-        self.last_us_time = None
-        self._warned_us_size = False
-        self._last_us_debug_log = self.get_clock().now()
 
         # UDP socket
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -122,10 +108,15 @@ class Lite3DriverNode(Node):
         # Publishers
         self.odom_pub = self.create_publisher(Odometry, "/leg_odom2", 10)
         self.status_pub = self.create_publisher(String, "/driver_status", 10)
-        front_topic = self.get_parameter("ultrasound_front_topic").value
-        back_topic = self.get_parameter("ultrasound_back_topic").value
-        self.front_pub = self.create_publisher(Range, front_topic, 10)
-        self.back_pub = self.create_publisher(Range, back_topic, 10)
+        if self.sonar_enable:
+            self.sonar_front_pub = self.create_publisher(
+                Range, "/ultrasonic/front", 10
+            )
+            self.sonar_rear_pub = self.create_publisher(
+                Range, "/ultrasonic/rear", 10
+            )
+            if self.sonar_debug:
+                self.create_timer(0.5, self._sonar_debug_cb)
 
         # Subscribers
         self.create_subscription(Twist, "/cmd_vel", self.cmd_vel_callback, 10)
@@ -194,19 +185,6 @@ class Lite3DriverNode(Node):
 
         return Twist(), "none"
 
-    def _apply_obstacle_clamp(self, vx):
-        if self.last_us_time is None:
-            return vx
-        dt = (self.get_clock().now() - self.last_us_time).nanoseconds / 1e9
-        if dt > self.us_timeout:
-            return vx
-
-        if self.front_dist is not None and self.front_dist < self.obs_dist and vx > 0:
-            return 0.0
-        if self.back_dist is not None and self.back_dist < self.obs_dist and vx < 0:
-            return 0.0
-        return vx
-
     # ------------------------------------------------------------------
     # UDP protocol helpers
     # ------------------------------------------------------------------
@@ -227,21 +205,13 @@ class Lite3DriverNode(Node):
 
     def send_velocity_loop(self):
         self.out_vel, self.source = self._select_velocity()
-        self.out_vel.linear.x = self._apply_obstacle_clamp(self.out_vel.linear.x)
         self.send_complex(0x0140, self.out_vel.linear.x)
         self.send_complex(0x0145, self.out_vel.linear.y)
         self.send_complex(0x0141, self.out_vel.angular.z)
 
     # ------------------------------------------------------------------
-    # State reception / odometry + ultrasound
+    # State reception / odometry
     # ------------------------------------------------------------------
-    def _read_double(self, data, idx):
-        """读取 0x0901 包中第 idx 个 double（从偏移 20 开始）。"""
-        offset = 20 + idx * 8
-        if len(data) < offset + 8:
-            return None
-        return struct.unpack_from("<d", data, offset)[0]
-
     def receive_data_loop(self):
         try:
             while True:
@@ -271,40 +241,90 @@ class Lite3DriverNode(Node):
 
                 self.odom_pub.publish(odom)
 
-                # 超声波
-                if self.front_index >= 0 or self.back_index >= 0 or self.us_debug:
-                    n_doubles = (len(data) - 20) // 8
-                    if self.us_debug:
-                        if not self._warned_us_size:
-                            self.get_logger().info(
-                                f"0x0901 packet length={len(data)}, doubles={n_doubles}"
-                            )
-                            self._warned_us_size = True
-                        if self.front_index < 0 and self.back_index < 0:
-                            now = self.get_clock().now()
-                            if (now - self._last_us_debug_log).nanoseconds / 1e9 >= 2.0:
-                                self._last_us_debug_log = now
-                                vals = [self._read_double(data, i) for i in range(n_doubles)]
-                                self.get_logger().info(f"ultrasound debug values: {vals}")
-
-                    now = self.get_clock().now()
-                    if self.front_index >= 0 and self.front_index < n_doubles:
-                        raw = self._read_double(data, self.front_index)
-                        if raw is not None:
-                            self.front_dist = raw * self.us_scale
-                            self.front_pub.publish(
-                                build_range("ultrasonic_front", now.to_msg(), self.front_dist, self.us_max_range)
-                            )
-                    if self.back_index >= 0 and self.back_index < n_doubles:
-                        raw = self._read_double(data, self.back_index)
-                        if raw is not None:
-                            self.back_dist = raw * self.us_scale
-                            self.back_pub.publish(
-                                build_range("ultrasonic_back", now.to_msg(), self.back_dist, self.us_max_range)
-                            )
-                    self.last_us_time = now
+                if self.sonar_enable:
+                    self._publish_sonar(data)
+                if self.sonar_debug:
+                    self._last_sonar_raw_data = data
         except (BlockingIOError, socket.error):
             pass
+
+    # ------------------------------------------------------------------
+    # Ultrasonic handling
+    # ------------------------------------------------------------------
+    def _publish_sonar(self, data):
+        front, rear = self._extract_sonar(data)
+        now = self.get_clock().now().to_msg()
+
+        front_msg = Range()
+        front_msg.header.stamp = now
+        front_msg.header.frame_id = self.sonar_frame_front
+        front_msg.radiation_type = Range.ULTRASOUND
+        front_msg.field_of_view = float(self.sonar_fov)
+        front_msg.min_range = float(self.sonar_min_valid)
+        front_msg.max_range = float(self.sonar_max_valid)
+        front_msg.range = float(front)
+
+        rear_msg = Range()
+        rear_msg.header.stamp = now
+        rear_msg.header.frame_id = self.sonar_frame_rear
+        rear_msg.radiation_type = Range.ULTRASOUND
+        rear_msg.field_of_view = float(self.sonar_fov)
+        rear_msg.min_range = float(self.sonar_min_valid)
+        rear_msg.max_range = float(self.sonar_max_valid)
+        rear_msg.range = float(rear)
+
+        self.sonar_front_pub.publish(front_msg)
+        self.sonar_rear_pub.publish(rear_msg)
+
+    def _extract_sonar(self, data):
+        try:
+            if self.sonar_byte_offset >= 0:
+                front, rear = struct.unpack_from(
+                    "<2d", data, self.sonar_byte_offset
+                )
+            else:
+                count = max(self.sonar_front_index, self.sonar_rear_index) + 1
+                body = struct.unpack_from(f"<{count}d", data, 20)
+                front = body[self.sonar_front_index]
+                rear = body[self.sonar_rear_index]
+        except struct.error as e:
+            self.get_logger().warning(f"Failed to parse sonar data: {e}")
+            return float("inf"), float("inf")
+
+        front = front * self.sonar_scale
+        rear = rear * self.sonar_scale
+        front = self._validate_sonar(front)
+        rear = self._validate_sonar(rear)
+        return front, rear
+
+    def _validate_sonar(self, value):
+        if math.isnan(value) or math.isinf(value):
+            return float("inf")
+        if value < self.sonar_min_valid or value > self.sonar_max_valid:
+            return float("inf")
+        return value
+
+    def _sonar_debug_cb(self):
+        now = self.get_clock().now()
+        if (now - self._last_sonar_debug_time).nanoseconds / 1e9 < 0.5:
+            return
+        self._last_sonar_debug_time = now
+
+        data = self._last_sonar_raw_data
+        if data is None:
+            self.get_logger().info("SONAR_DEBUG: no raw data yet")
+            return
+
+        self.get_logger().info(f"SONAR_DEBUG: packet_len={len(data)}")
+        try:
+            # Print first N doubles to help locate ultrasound fields.
+            count = min(30, (len(data) - 20) // 8)
+            body = struct.unpack_from(f"<{count}d", data, 20)
+            parts = [f"[{i:2d}]={v:.3f}" for i, v in enumerate(body)]
+            for i in range(0, len(parts), 5):
+                self.get_logger().info("SONAR_DEBUG: " + "  ".join(parts[i:i+5]))
+        except struct.error as e:
+            self.get_logger().warning(f"SONAR_DEBUG: unpack error {e}")
 
     # ------------------------------------------------------------------
     # Status diagnostics
@@ -322,16 +342,12 @@ class Lite3DriverNode(Node):
         elif auto_dt < self.cmd_timeout:
             source = "auto"
 
-        front = self.front_dist if self.front_dist is not None else -1.0
-        back = self.back_dist if self.back_dist is not None else -1.0
-
         msg = String()
         msg.data = (
             f"source={source} "
             f"vx={self.out_vel.linear.x:.3f} "
             f"vy={self.out_vel.linear.y:.3f} "
-            f"w={self.out_vel.angular.z:.3f} "
-            f"front={front:.2f} back={back:.2f}"
+            f"w={self.out_vel.angular.z:.3f}"
         )
         self.status_pub.publish(msg)
 
