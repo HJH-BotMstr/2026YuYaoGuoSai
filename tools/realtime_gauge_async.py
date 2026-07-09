@@ -240,9 +240,19 @@ def detect_circle_fast(gray, frame_bgr=None, scale=0.5):
 # 以下为新增函数：平滑版指针检测
 # ============================================================================
 
+def _smooth_circular(data, kernel_size):
+    """对角度序列做环形移动平均，正确处理 0°/360° 交界。"""
+    n = len(data)
+    half = kernel_size // 2
+    extended = np.concatenate([data[-half:], data, data[:half]])
+    kernel = np.ones(kernel_size, dtype=np.float32) / kernel_size
+    smoothed = np.convolve(extended, kernel, mode='valid')
+    return smoothed[:n]
+
+
 def detect_ptr_smooth(polar, smooth_kernel=5):
     """
-    在 detect_ptr 基础上增加高斯模糊和列均值平滑，减少噪声导致的跳变。
+    在 detect_ptr 基础上增加高斯模糊和环形列均值平滑，减少噪声导致的跳变。
     """
     # 对极坐标图做轻微高斯模糊
     polar_blur = cv2.GaussianBlur(polar, (3, 3), 0)
@@ -251,10 +261,9 @@ def detect_ptr_smooth(polar, smooth_kernel=5):
     clip = int(rows * 0.20)
     col_means = np.mean(polar_blur[clip:, :], axis=0).astype(np.float32)
 
-    # 对列均值做移动平均平滑
+    # 对列均值做环形移动平均平滑，避免 0°/360° 边界被压到最小值
     if smooth_kernel > 1:
-        kernel = np.ones(smooth_kernel, dtype=np.float32) / smooth_kernel
-        col_means = np.convolve(col_means, kernel, mode='same')
+        col_means = _smooth_circular(col_means, smooth_kernel)
 
     min_col = int(np.argmin(col_means))
     if 1 <= min_col < len(col_means) - 1:
