@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""一键启动独立版 Lite3 驱动 + 交互式偏航控制器。
+"""一键启动独立版 Lite3 驱动 + 交互式运动控制器。
 
 驱动在后台运行，控制器在前台运行，可以直接在终端输入命令。
 退出控制器时会自动终止驱动进程。
@@ -20,7 +20,7 @@ CONTROLLER_CMD = [sys.executable, str(PROJECT_ROOT / "tools" / "yaw_controller.p
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Start standalone Lite3 driver and yaw controller"
+        description="Start standalone Lite3 driver and motion controller"
     )
     parser.add_argument(
         "--show-driver",
@@ -55,7 +55,7 @@ def main():
 
     exit_code = 0
     try:
-        print("正在启动 yaw_controller.py，请在下方输入命令 ...\n")
+        print("正在启动 yaw_controller.py（运动控制），请在下方输入命令 ...\n")
         result = subprocess.run(CONTROLLER_CMD, cwd=PROJECT_ROOT)
         exit_code = result.returncode
     except KeyboardInterrupt:
