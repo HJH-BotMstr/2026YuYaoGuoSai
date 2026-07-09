@@ -237,6 +237,37 @@ def detect_circle_fast(gray, frame_bgr=None, scale=0.5):
 
 
 # ============================================================================
+# 以下为新增函数：平滑版指针检测
+# ============================================================================
+
+def detect_ptr_smooth(polar, smooth_kernel=5):
+    """
+    在 detect_ptr 基础上增加高斯模糊和列均值平滑，减少噪声导致的跳变。
+    """
+    # 对极坐标图做轻微高斯模糊
+    polar_blur = cv2.GaussianBlur(polar, (3, 3), 0)
+
+    rows, cols = polar_blur.shape
+    clip = int(rows * 0.20)
+    col_means = np.mean(polar_blur[clip:, :], axis=0).astype(np.float32)
+
+    # 对列均值做移动平均平滑
+    if smooth_kernel > 1:
+        kernel = np.ones(smooth_kernel, dtype=np.float32) / smooth_kernel
+        col_means = np.convolve(col_means, kernel, mode='same')
+
+    min_col = int(np.argmin(col_means))
+    if 1 <= min_col < len(col_means) - 1:
+        y0, y1, y2 = col_means[min_col - 1], col_means[min_col], col_means[min_col + 1]
+        d = y0 - 2.0 * y1 + y2
+        offset = (y0 - y2) / (2.0 * d) if abs(d) > 1e-10 else 0.0
+    else:
+        offset = 0.0
+
+    return ((min_col + offset) * 360.0 / cols) % 360.0
+
+
+# ============================================================================
 # 以下为新增类：多线程识别器
 # ============================================================================
 
@@ -362,7 +393,7 @@ class AsyncGaugeProcessor:
         gray_roi = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray_roi)
         t7 = time.time()
 
-        ptr_angle = detect_ptr(polar_unwrap(gray_roi))
+        ptr_angle = detect_ptr_smooth(polar_unwrap(gray_roi))
         t8 = time.time()
 
         status, tag = classify(ptr_angle, up_angle)
