@@ -2,6 +2,13 @@
 # -*- coding: utf-8 -*-
 """Pose controller: position + yaw closed-loop with ultrasonic obstacle avoidance.
 
+Uses the robot's official ROS2 stack:
+  - /leg_odom2           -> odometry
+  - /us_publisher/ultrasound_distance -> rear ultrasonic (Float64)
+  - /cmd_vel             -> velocity commands
+
+Front obstacle avoidance is left for the depth camera in the future.
+
 Supports terminal meta-commands:
   x+0.5   move forward 0.5 m
   x-0.5   move backward 0.5 m
@@ -22,8 +29,7 @@ import rclpy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from sensor_msgs.msg import Range
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Float64, String
 
 
 def normalize_angle(a):
@@ -88,8 +94,9 @@ class PoseController(Node):
         self.declare_parameter("gait", "slow")
         self.declare_parameter("obstacle_stop_dist", 0.28)
         self.declare_parameter("obstacle_resume_hyst", 0.05)
-        self.declare_parameter("sonar_front_topic", "/ultrasonic/front")
-        self.declare_parameter("sonar_rear_topic", "/ultrasonic/rear")
+        self.declare_parameter("sonar_topic", "/us_publisher/ultrasound_distance")
+        self.declare_parameter("sonar_is_rear", True)
+        self.declare_parameter("cmd_vel_topic", "/cmd_vel")
 
         self.kp_dist = self.get_parameter("kp_dist").value
         self.kp_yaw = self.get_parameter("kp_yaw").value
@@ -108,8 +115,9 @@ class PoseController(Node):
         self.gait = self.get_parameter("gait").value
         self.obstacle_stop_dist = self.get_parameter("obstacle_stop_dist").value
         self.obstacle_resume_hyst = self.get_parameter("obstacle_resume_hyst").value
-        self.sonar_front_topic = self.get_parameter("sonar_front_topic").value
-        self.sonar_rear_topic = self.get_parameter("sonar_rear_topic").value
+        self.sonar_topic = self.get_parameter("sonar_topic").value
+        self.sonar_is_rear = self.get_parameter("sonar_is_rear").value
+        self.cmd_vel_topic = self.get_parameter("cmd_vel_topic").value
 
         # State
         self._lock = threading.Lock()
@@ -125,6 +133,7 @@ class PoseController(Node):
         self._in_db = False
         self._front_blocked = False
         self._rear_blocked = False
+        self._rear_dist = float("inf")
         self._estop = False
         self._last_odom_time = None
         self._shutdown = False
@@ -134,10 +143,9 @@ class PoseController(Node):
         # ROS
         self.create_subscription(Odometry, "/leg_odom2", self._odom_cb, 10)
         self.create_subscription(Bool, "/emergency_stop", self._estop_cb, 10)
-        self.create_subscription(Range, self.sonar_front_topic, self._sonar_front_cb, 10)
-        self.create_subscription(Range, self.sonar_rear_topic, self._sonar_rear_cb, 10)
+        self.create_subscription(Float64, self.sonar_topic, self._sonar_cb, 10)
 
-        self.cmd_pub = self.create_publisher(Twist, "/cmd_vel_auto", 10)
+        self.cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
         self.gait_pub = self.create_publisher(String, "/cmd_gait", 10)
 
         self.create_timer(self.dt, self._control_cb)
@@ -171,11 +179,10 @@ class PoseController(Node):
     def _estop_cb(self, msg: Bool):
         self._estop = msg.data
 
-    def _sonar_front_cb(self, msg: Range):
-        self._update_blocked(msg.range, "front")
-
-    def _sonar_rear_cb(self, msg: Range):
-        self._update_blocked(msg.range, "rear")
+    def _sonar_cb(self, msg: Float64):
+        # The official topic currently only carries rear distance.
+        direction = "rear" if self.sonar_is_rear else "front"
+        self._update_blocked(msg.data, direction)
 
     def _update_blocked(self, distance, direction):
         stop = self.obstacle_stop_dist
@@ -187,6 +194,7 @@ class PoseController(Node):
                 elif distance > stop + hyst:
                     self._front_blocked = False
             else:
+                self._rear_dist = distance
                 if distance <= stop:
                     self._rear_blocked = True
                 elif distance > stop + hyst:
@@ -431,8 +439,8 @@ class PoseController(Node):
             cur = dict(self._current)
             tgt = self._target
             state = self._state
-            front = self._front_blocked
             rear = self._rear_blocked
+            rear_dist = self._rear_dist
             vx, vy, omega = self._last_cmd
             source = self._source
 
@@ -457,7 +465,7 @@ class PoseController(Node):
             )
         print(
             f"cmd=({vx:+.3f},{vy:+.3f},{omega:+.4f})  "
-            f"blocked=(F:{front},R:{rear})  [{source}]"
+            f"rear_blocked={rear} rear_dist={rear_dist:.2f}m  [{source}]"
         )
 
     def shutdown(self):
