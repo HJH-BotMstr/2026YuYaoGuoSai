@@ -10,8 +10,8 @@ hardware:
 arm:
   moving_speed: 500                  # 舵机运动速度 (0~4095)
   moving_acc: 30                      # 舵机加速度
-  gripper_open_val: 2047              # 夹爪张开值（最大张开约 1600）
-  gripper_close_val: 2200             # 夹爪闭合目标值（空载时会夹到此位置）
+  gripper_open_val: 1847              # 夹爪张开值（最大张开约 1600）
+  gripper_close_val: 2250             # 夹爪闭合目标值（空载时会夹到此位置）
   gripper_pos_gap_threshold: 30      # [TODO: 现场标定] 夹爪位置差判断阈值：空载差<此值，夹住物体差>此值
   grasp_retry_max: 3                  # 抓取失败最大重试次数            
   wait_position_timeout: 5.0          # 等待舵机到位超时（秒）
