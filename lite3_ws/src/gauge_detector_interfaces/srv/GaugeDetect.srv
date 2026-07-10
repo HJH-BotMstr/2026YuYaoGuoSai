@@ -1,0 +1,6 @@
+---
+bool success
+string letter        # 识别到的 ABCD 字母
+string zone          # 指针所在区域：RED / GREEN / YELLOW
+string state         # 整体状态：normal（GREEN 区）/ abnormal（RED 或 YELLOW 区）
+string message
