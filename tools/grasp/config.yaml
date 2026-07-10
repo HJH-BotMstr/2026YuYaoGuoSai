@@ -27,9 +27,9 @@ detection:
 
   # 红色长条 HSV 范围 [TODO: 现场标定] 用 tools_box/hsv_picker/hsv_picker.py 提取
   # 红色跨 0°/180° 分两段，两段掩码取并集
-  hsv_red_lower1: [0,   120, 100]
+  hsv_red_lower1: [0,   80, 120]
   hsv_red_upper1: [10,  255, 255]
-  hsv_red_lower2: [160, 120, 100]
+  hsv_red_lower2: [160, 80, 100]
   hsv_red_upper2: [180, 255, 255]
 
   # 绿色长条 HSV 范围 [TODO: 现场标定]
