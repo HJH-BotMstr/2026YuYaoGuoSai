@@ -315,8 +315,8 @@ class PoseController(Node):
                 self.max_vel_yaw / max(self.ki_yaw, 1e-6),
             )
 
-        # Negative sign: on this robot angular.z > 0 is clockwise.
-        u = -(self.kp_yaw * e + self.ki_yaw * self._integral) - self.kd_yaw * self._omega
+        # Official ROS stack: angular.z > 0 increases yaw (counter-clockwise).
+        u = (self.kp_yaw * e + self.ki_yaw * self._integral) - self.kd_yaw * self._omega
         u = clamp(u, self.max_vel_yaw)
         self._last_e_yaw = e
         return u
@@ -450,7 +450,7 @@ class PoseController(Node):
         cur_yaw_deg = math.degrees(normalize_angle(origin["yaw"] + cur["yaw"]))
         origin_deg = math.degrees(origin["yaw"])
         if tgt is not None:
-            tgt_yaw_deg = math.degrees(normalize_angle(origin["yaw"] + tgt["yaw"]))
+            tgt_yaw_deg = math.degrees(normalize_angle(tgt["yaw"]))
             print(
                 f"state={state:8s}  "
                 f"origin=({origin_deg:7.2f}°)  "
