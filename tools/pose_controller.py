@@ -447,10 +447,10 @@ class PoseController(Node):
         if origin is None:
             return
 
-        cur_yaw_deg = math.degrees(normalize_angle(origin["yaw"] + cur["yaw"]))
+        cur_yaw_deg = math.degrees(normalize_angle(cur["yaw"]))
         origin_deg = math.degrees(origin["yaw"])
         if tgt is not None:
-            tgt_yaw_deg = math.degrees(normalize_angle(tgt["yaw"]))
+            tgt_yaw_deg = math.degrees(normalize_angle(tgt["yaw"] - origin["yaw"]))
             print(
                 f"state={state:8s}  "
                 f"origin=({origin_deg:7.2f}°)  "
