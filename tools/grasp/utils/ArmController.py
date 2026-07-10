@@ -23,8 +23,8 @@ SCS_ID_5 = 5
 SCS_ID_6 = 6  
 
 #  舵机预设值（单位：舵机脉冲，2047 = 中间/水平） 
-SCS_1_INIT_VALUE      = 2400   #夹爪闭合（初始/运输状态）
-SCS_1_STATUS_VALUE    = 2047   #2047  
+SCS_1_INIT_VALUE      = 1847   #2400   #夹爪闭合（初始/运输状态）
+SCS_1_STATUS_VALUE    = 1847   #2047  
 
 SCS_2_INIT_VALUE      = 2047
 SCS_2_STATUS_VALUE    = 2047
@@ -35,7 +35,7 @@ SCS_3_MOVE_VALUE      = 1500   #1070
 SCS_3_TRANSPORT1_VALUE= 2000   #3060
 SCS_3_TRANSPORT2_VALUE= 2940
 
-SCS_4_INIT_VALUE      = 800
+SCS_4_INIT_VALUE      = 1200
 SCS_4_STATUS_VALUE    = 1100
 SCS_4_MOVE_VALUE      = 650    #540
 SCS_4_TRANSPORT1_VALUE= 1024
@@ -54,6 +54,7 @@ DEFAULT_SPEED = 1500
 DEFAULT_ACC   = 50
 
 # 安全范围（逆运动学输出超出则拒绝执行）
+SAFE_ANGLE_3 = (1000, 3200)
 SAFE_ANGLE_4 = (540,  3400)
 SAFE_ANGLE_5 = (1000, 3050)
 
@@ -90,47 +91,54 @@ class ArmController:
         else:
             logger.error("波特率设置失败")                                
 
-    def set_pose(self, mode: int = 0) -> None:
-        """切换预设姿态。0=初始 1=姿态1 2=运动 3=运输水平 4=运输垂直"""
+    def set_pose(self, mode: int = 0, keep_gripper: bool = False) -> None:
+        """切换预设姿态。0=初始 1=姿态1 2=运动 3=运输水平 4=运输垂直
+        keep_gripper=True 时不改变夹爪位置（抓取后运输/归位时使用）。
+        """
         ph = self.packetHandler
         spd, acc = self._speed, self._acc
 
         if mode == 0:
-            ph.WritePosEx(SCS_ID_1, SCS_1_INIT_VALUE,       spd, acc)
+            if not keep_gripper:
+                ph.WritePosEx(SCS_ID_1, SCS_1_INIT_VALUE,       spd, acc)
             ph.WritePosEx(SCS_ID_2, SCS_2_INIT_VALUE,       spd, acc)
             ph.WritePosEx(SCS_ID_3, SCS_3_INIT_VALUE,       spd, acc)
             ph.WritePosEx(SCS_ID_4, SCS_4_INIT_VALUE,       spd, acc)
             ph.WritePosEx(SCS_ID_5, SCS_5_INIT_VALUE,       spd, acc)
             ph.WritePosEx(SCS_ID_6, SCS_6_INIT_VALUE,       spd, acc)
         elif mode == 1:
-            ph.WritePosEx(SCS_ID_1, SCS_1_INIT_VALUE,       spd, acc)
+            if not keep_gripper:
+                ph.WritePosEx(SCS_ID_1, SCS_1_INIT_VALUE,       spd, acc)
             ph.WritePosEx(SCS_ID_2, SCS_2_INIT_VALUE,       spd, acc)
             ph.WritePosEx(SCS_ID_3, SCS_3_STATUS_VALUE,     spd, acc)
             ph.WritePosEx(SCS_ID_4, SCS_4_STATUS_VALUE,     spd, acc)
             ph.WritePosEx(SCS_ID_5, SCS_5_STATUS_VALUE,     spd, acc)
             ph.WritePosEx(SCS_ID_6, SCS_6_INIT_VALUE,       spd, acc)
         elif mode == 2:
-            ph.WritePosEx(SCS_ID_1, SCS_1_INIT_VALUE,       spd, acc)
+            if not keep_gripper:
+                ph.WritePosEx(SCS_ID_1, SCS_1_INIT_VALUE,       spd, acc)
             ph.WritePosEx(SCS_ID_2, SCS_2_INIT_VALUE,       spd, acc)
             ph.WritePosEx(SCS_ID_3, SCS_3_MOVE_VALUE,       spd, acc)
-            for _ in range(20):   
+            for _ in range(20):
                 time.sleep(0.1)
             ph.WritePosEx(SCS_ID_4, SCS_4_MOVE_VALUE,       spd, acc)
             ph.WritePosEx(SCS_ID_5, SCS_5_MOVE_VALUE,       spd, acc)
             ph.WritePosEx(SCS_ID_6, SCS_6_INIT_VALUE,       spd, acc)
         elif mode == 3:
-            ph.WritePosEx(SCS_ID_1, SCS_1_INIT_VALUE,       spd, acc)
+            if not keep_gripper:
+                ph.WritePosEx(SCS_ID_1, SCS_1_INIT_VALUE,       spd, acc)
             ph.WritePosEx(SCS_ID_2, SCS_2_INIT_VALUE,       spd, acc)
             ph.WritePosEx(SCS_ID_6, SCS_6_INIT_VALUE,       spd, acc)
-            for _ in range(10):   
+            for _ in range(10):
                 time.sleep(0.1)
             ph.WritePosEx(SCS_ID_5, SCS_5_TRANSPORT1_VALUE, spd, acc)
             ph.WritePosEx(SCS_ID_4, SCS_4_TRANSPORT1_VALUE, spd, acc)
-            for _ in range(10):   
+            for _ in range(10):
                 time.sleep(0.1)
             ph.WritePosEx(SCS_ID_3, SCS_3_TRANSPORT1_VALUE, spd, acc)
         elif mode == 4:
-            ph.WritePosEx(SCS_ID_1, SCS_1_INIT_VALUE,       spd, acc)
+            if not keep_gripper:
+                ph.WritePosEx(SCS_ID_1, SCS_1_INIT_VALUE,       spd, acc)
             ph.WritePosEx(SCS_ID_2, SCS_2_INIT_VALUE,       spd, acc)
             ph.WritePosEx(SCS_ID_5, SCS_5_TRANSPORT2_VALUE, spd, acc)
             ph.WritePosEx(SCS_ID_4, SCS_4_TRANSPORT2_VALUE, spd, acc)
@@ -222,18 +230,16 @@ class ArmController:
 
     def grasp_with_verify(self, dis: float, height: float) -> bool:
         """
-        完整抓取 + 负载校验流程。
-        流程：open → grap（原始接口）→ wait_for_position → close → 读负载 → 判断
-        失败自动重试，最多 grasp_retry_max 次。
-        返回 True 表示成功抓住，False 表示全部重试失败。
+        完整抓取 + 位置校验流程。
+        判断逻辑：夹爪闭合后读实际位置，若实际位置与目标有明显差距（夹到了物体），
+        则认为抓取成功；若夹到底（接近目标位置），则认为空夹失败。
         """
         max_retry   = int(self._cfg["grasp_retry_max"])
-        load_thr    = int(self._cfg["gripper_load_threshold"])
         pos_timeout = float(self._cfg["wait_position_timeout"])
-        spd, acc    = self._speed, self._acc
-
-        # 读取空载基准负载
-        base_load, _, _ = self.packetHandler.ReadLoad(SCS_ID_1)
+        close_val   = int(self._cfg["gripper_close_val"])
+        # 空夹时夹爪能夹到底，位置差小；夹到物体时夹不到底，位置差大
+        # 阈值：实际位置与目标差超过此值视为夹住
+        pos_gap_thr = int(self._cfg.get("gripper_pos_gap_threshold", 100))
 
         for attempt in range(1, max_retry + 1):
             logger.info("抓取尝试 %d/%d", attempt, max_retry)
@@ -251,18 +257,27 @@ class ArmController:
             self.wait_for_position(targets, timeout=pos_timeout)
 
             self.close_gripper()
+            # 等夹爪停稳
             time.sleep(0.5)
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                moving, _, _ = self.packetHandler.ReadMoving(SCS_ID_1)
+                if moving == 0:
+                    break
+                time.sleep(0.05)
+            time.sleep(0.1)
 
-            # 读夹爪负载，与基准差值判断是否夹住
-            current_load, _, _ = self.packetHandler.ReadLoad(SCS_ID_1)
-            load_diff = abs(current_load - base_load)
-            logger.debug("负载差值: %d (阈值 %d)", load_diff, load_thr)
+            # 读夹爪实际位置
+            actual_pos, comm, _ = self.packetHandler.ReadPos(SCS_ID_1)
+            pos_gap = abs(actual_pos - close_val)
+            logger.info("夹爪位置: actual=%d target=%d gap=%d (阈值 %d) comm=%d",
+                        actual_pos, close_val, pos_gap, pos_gap_thr, comm)
 
-            if load_diff >= load_thr:
-                logger.info("抓取成功（负载差 %d）", load_diff)
+            if pos_gap >= pos_gap_thr:
+                logger.info("抓取成功（位置差 %d，夹到物体）", pos_gap)
                 return True
 
-            logger.warning("抓取失败（负载差 %d < %d），准备重试", load_diff, load_thr)
+            logger.warning("抓取失败（位置差 %d < %d，空夹），准备重试", pos_gap, pos_gap_thr)
             self.open_gripper()
             time.sleep(0.3)
 

@@ -13,9 +13,9 @@ def Arm(x = None, y = None):
 
     # Define the length of each link
     # 定义连杆长度，单位为毫米
-    L1 = 105     # L1
-    L2 = 100     # L2
-    L3 = 120     # L3
+    L1 = 105     # L1底座，实测：105
+    L2 = 100     # L2，实测：110
+    L3 = 120     # L3末端，实测：50
 
     # Define the end-effector position and orientation
     # 定义末端关节的位置为x,y，单位为毫米，姿态为theta（即 L3与X轴的夹角,这里设置为0 ），单位为弧度。这math.radians函数将角度转换为弧度

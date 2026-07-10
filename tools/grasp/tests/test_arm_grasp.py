@@ -11,7 +11,11 @@ import os
 import argparse
 import time
 import threading
+import logging
 import yaml
+
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s [%(levelname)s] %(message)s")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -90,19 +94,20 @@ def test_single_grasp(arm: ArmController, dis: float, height: float):
         time.sleep(1)
     ok = arm.grasp_with_verify(dis=dis, height=height)
     if ok:
-        print("抓取成功！进入运输姿态...")
-        arm.set_pose(3)
+        print("抓取成功！进入运输姿态（夹爪保持夹紧）...")
+        arm.set_pose(3, keep_gripper=True)
         time.sleep(3)
-        print("3 秒后松开夹爪...")
-        time.sleep(3)
+        print("归位（夹爪保持夹紧）...")
+        arm.set_pose(0, keep_gripper=True)
+        time.sleep(2)
+        print("松开夹爪...")
         arm.open_gripper()
         time.sleep(1)
     else:
         print("抓取失败（超过最大重试次数）。")
-
-    print("归位...")
-    arm.set_pose(0)
-    time.sleep(2)
+        print("归位...")
+        arm.set_pose(0)
+        time.sleep(2)
 
 
 def main():
