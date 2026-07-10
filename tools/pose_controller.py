@@ -92,7 +92,7 @@ class PoseController(Node):
         self.declare_parameter("control_rate", 25.0)
         self.declare_parameter("stale_odom_timeout", 0.3)
         self.declare_parameter("gait", "slow")
-        self.declare_parameter("obstacle_stop_dist", 0.28)
+        self.declare_parameter("obstacle_stop_dist", 0.35)
         self.declare_parameter("obstacle_resume_hyst", 0.05)
         self.declare_parameter("sonar_topic", "/us_publisher/ultrasound_distance")
         self.declare_parameter("sonar_is_rear", True)
