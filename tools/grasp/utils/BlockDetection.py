@@ -108,6 +108,58 @@ class BlockDetection:
             "pos_3d": (round(X, 1), round(Y, 1), round(Z, 1)),
         }
 
+    def detect_all(self, frame) -> list:
+        """
+        检测所有满足面积阈值的红/绿色块，返回候选列表。
+        每项结构与 detect() 返回值相同，列表按 distance_mm 升序排列（近→远）。
+        无目标时返回空列表。
+        """
+        undist = cv2.undistort(frame, self._cam_mtx, self._dist)
+        hsv = cv2.cvtColor(undist, cv2.COLOR_BGR2HSV)
+        h, w = undist.shape[:2]
+        cx_img = w / 2.0
+        cy_img = h / 2.0
+
+        mask_r1 = cv2.inRange(hsv, self._red_lower1, self._red_upper1)
+        mask_r2 = cv2.inRange(hsv, self._red_lower2, self._red_upper2)
+        mask_red = cv2.bitwise_or(mask_r1, mask_r2)
+        mask_green = cv2.inRange(hsv, self._green_lower, self._green_upper)
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        results = []
+        fx = self._cam_mtx[0, 0]
+        fy = self._cam_mtx[1, 1]
+        cam_cx = self._cam_mtx[0, 2]
+        cam_cy = self._cam_mtx[1, 2]
+
+        for color, raw_mask in (("red", mask_red), ("green", mask_green)):
+            mask = cv2.morphologyEx(raw_mask, cv2.MORPH_OPEN,  kernel)
+            mask = cv2.morphologyEx(mask,     cv2.MORPH_CLOSE, kernel)
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                            cv2.CHAIN_APPROX_SIMPLE)
+            for cnt in contours:
+                area = cv2.contourArea(cnt)
+                if area < self._min_area:
+                    continue
+                x, y, bw, bh = cv2.boundingRect(cnt)
+                cx_block = x + bw / 2.0
+                cy_block = y + bh / 2.0
+                offset_x = int(cx_block - cx_img)
+                distance_mm = fx * self._real_width_mm / bw if bw > 0 else 0.0
+                X = (cx_block - cam_cx) / fx * distance_mm
+                Z = (cy_block - cam_cy) / fy * distance_mm
+                Y = distance_mm
+                results.append({
+                    "color": color,
+                    "bbox": ((x, y), (x + bw, y + bh)),
+                    "center_offset_x": offset_x,
+                    "distance_mm": round(distance_mm, 1),
+                    "pos_3d": (round(X, 1), round(Y, 1), round(Z, 1)),
+                })
+
+        results.sort(key=lambda r: r["distance_mm"])
+        return results
+
     def visualize(self, frame, result: dict | None):
         """在 frame 上绘制检测结果，用于调试。"""
         if result is None:

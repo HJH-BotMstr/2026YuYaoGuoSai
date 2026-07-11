@@ -2,6 +2,9 @@
 #  带 [TODO: 现场标定] 的参数需要上机后实测修改
 #  修改本文件后重启 main.py 即生效，无需改代码
 
+runtime:
+  mode: "pc"                            # "pc" | "robot"；命令行 --mode 优先级更高
+
 hardware:
   arm_serial_port: "/dev/ttyUSB0"     # [TODO: 现场标定] Lite3 感知主机上确认: ls /dev/ttyUSB*
   arm_serial_baud: 500000             # 舵机波特率，一般不变
@@ -13,7 +16,7 @@ arm:
   gripper_open_val: 1847              # 夹爪张开值（最大张开约 1600）
   gripper_close_val: 2250             # 夹爪闭合目标值（空载时会夹到此位置）
   gripper_pos_gap_threshold: 30      # [TODO: 现场标定] 夹爪位置差判断阈值：空载差<此值，夹住物体差>此值
-  grasp_retry_max: 3                  # 抓取失败最大重试次数            
+  grasp_retry_max: 3                  # 抓取失败最大重试次数
   wait_position_timeout: 5.0          # 等待舵机到位超时（秒）
   wait_position_threshold: 30         # 到位判定容差（舵机脉冲值，约 ±3°）
 
@@ -40,12 +43,14 @@ detection:
   block_real_width_mm: 40.0           # 长条实际宽度 40mm（题目给定，不变）
 
 grasp:
-  D_hand_mm: 150.0                    # [TODO: 现场标定] 摄像头到色块的目标距离（mm）
-  D_hand_thr_mm: 15.0                 # 距离判断容差（mm）
-  grasp_height_mm: 30.0               # [TODO: 现场标定] 抓取时末端高度（mm）
-  center_offset_threshold: 15         # 色块中心偏移容差（像素），超过则微调 6 号舵机
-  distance_avg_window: 20             # 距离滑动均值窗口帧数，稳定后才触发抓取
-  detect_timeout: 30.0                # phase_2 识别超时（秒）
+  h_object: 25.0                       # [TODO: 现场标定] 末端抓取高度（mm，基座坐标系）
+  distance_offset_mm: 180.0            # [TODO: 现场标定] 视觉测距固定补偿（mm），加到 Y_cam 上
+  approach_clearance_mm: 25.0          # 步骤1与物块的水平安全余量（mm）
+  align_offset_threshold_mm: 10.0      # X_cam 偏移超过此值才触发横向对齐（mm）
+  lost_frames_max: 10
+  distance_avg_window: 20
+  detect_timeout: 30.0
+  grasp_retry_max: 3
 
 placement:
   # 各放置区对应机械臂末端参数 [TODO: 现场标定]
