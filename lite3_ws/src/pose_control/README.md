@@ -95,9 +95,13 @@ ros2 topic pub /move geometry_msgs/Pose2D "{x: 0.0, y: 0.1, theta: 90.0}" --once
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `kp_dist` | `float` | `1.0` | 位置 P 增益 |
+| `kp_dist` | `float` | `1.0` | 前后位置 P 增益 |
+| `ki_dist` | `float` | `0.0` | 前后位置 I 增益（默认关闭） |
+| `kp_lateral` | `float` | `1.0` | 横向修正 P 增益 |
+| `ki_lateral` | `float` | `0.0` | 横向修正 I 增益（默认关闭） |
 | `kp_yaw` | `float` | `2.0` | 航向 P 增益 |
 | `kd_yaw` | `float` | `0.3` | 航向 D 增益 |
+| `ki_yaw` | `float` | `0.0` | 航向 I 增益（默认关闭） |
 | `max_vel_x` | `float` | `0.3` | 最大前后速度（m/s） |
 | `max_vel_y` | `float` | `0.2` | 最大左右速度（m/s） |
 | `max_vel_yaw` | `float` | `1.6` | 最大旋转速度（rad/s） |

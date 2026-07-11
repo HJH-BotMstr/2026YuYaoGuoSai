@@ -76,32 +76,54 @@ class PoseController(Node):
     def __init__(self):
         super().__init__("pose_controller")
 
-        # Tunable parameters
-        self.declare_parameter("kp_dist", 1.0)
-        self.declare_parameter("kp_yaw", 2.0)
-        self.declare_parameter("kd_yaw", 0.3)
-        self.declare_parameter("kp_lateral", 1.0)
-        self.declare_parameter("ki_yaw", 0.0)
-        self.declare_parameter("max_vel_x", 0.3)
-        self.declare_parameter("max_vel_y", 0.2)
-        self.declare_parameter("max_vel_yaw", 1.6)
-        self.declare_parameter("dist_threshold", 0.05)
-        self.declare_parameter("yaw_threshold", 0.05)
+        # 可调参数
+        # 位置 / 横向 PI 增益：输出速度 = kp × 误差 + ki × 积分（单位：m/s）。
+        self.declare_parameter("kp_dist", 1.0)          # 前后位置 P 增益
+        self.declare_parameter("ki_dist", 0.0)          # 前后位置 I 增益
+        self.declare_parameter("kp_lateral", 1.0)       # 横向修正 P 增益
+        self.declare_parameter("ki_lateral", 0.0)       # 横向修正 I 增益
+
+        # 航向 PID 增益。注意：官方 ROS 约定 angular.z > 0 为逆时针。
+        self.declare_parameter("kp_yaw", 2.0)           # 航向 P 增益（rad/s 每 rad 误差）
+        self.declare_parameter("kd_yaw", 0.3)           # 航向 D 增益，作用在测量角速度上
+        self.declare_parameter("ki_yaw", 0.0)           # 航向 I 增益（当前未使用）
+
+        # 发布到 /cmd_vel 的速度上限。
+        self.declare_parameter("max_vel_x", 0.3)        # 最大前后速度（m/s）
+        self.declare_parameter("max_vel_y", 0.2)        # 最大左右速度（m/s）
+        self.declare_parameter("max_vel_yaw", 1.6)      # 最大旋转角速度（rad/s）
+
+        # 到位阈值。当相关误差都小于该阈值时，控制器认为已到达目标并停止。
+        self.declare_parameter("dist_threshold", 0.05)  # 位置到位阈值（m）
+        self.declare_parameter("yaw_threshold", 0.05)   # 航向到位阈值（rad）
+
+        # 航向死区：当 |航向误差| <= angle_threshold 时，积分器清零、输出为零。
+        # deadband_hysteresis 放大退出阈值，避免在死区边界抖动。
         self.declare_parameter("angle_threshold", 0.01)
         self.declare_parameter("deadband_hysteresis", 1.5)
-        self.declare_parameter("control_rate", 25.0)
-        self.declare_parameter("stale_odom_timeout", 0.3)
+
+        # 时序 / 安全。
+        self.declare_parameter("control_rate", 25.0)    # 控制循环频率（Hz）
+        self.declare_parameter("stale_odom_timeout", 0.3)  # 超过该时间未收到 /leg_odom2 则输出零速度（s）
+
+        # 首次收到里程计时发送的步态。
         self.declare_parameter("gait", "slow")
-        self.declare_parameter("obstacle_stop_dist", 0.35)
-        self.declare_parameter("obstacle_resume_hyst", 0.05)
+
+        # 超声波避障。
+        self.declare_parameter("obstacle_stop_dist", 0.35)   # 障碍物小于该距离时停止（m）
+        self.declare_parameter("obstacle_resume_hyst", 0.05) # 障碍物需再远离该距离才恢复运动（m）
+
+        # 话题名与传感器方向。
         self.declare_parameter("sonar_topic", "/us_publisher/ultrasound_distance")
-        self.declare_parameter("sonar_is_rear", True)
+        self.declare_parameter("sonar_is_rear", True)  # True：该超声波话题对应后向雷达
         self.declare_parameter("cmd_vel_topic", "/cmd_vel")
 
         self.kp_dist = self.get_parameter("kp_dist").value
+        self.ki_dist = self.get_parameter("ki_dist").value
         self.kp_yaw = self.get_parameter("kp_yaw").value
         self.kd_yaw = self.get_parameter("kd_yaw").value
         self.kp_lateral = self.get_parameter("kp_lateral").value
+        self.ki_lateral = self.get_parameter("ki_lateral").value
         self.ki_yaw = self.get_parameter("ki_yaw").value
         self.max_vel_x = self.get_parameter("max_vel_x").value
         self.max_vel_y = self.get_parameter("max_vel_y").value
@@ -128,6 +150,8 @@ class PoseController(Node):
         self._target = None
         self._start_pose = None
         self._state = "idle"
+        self._integral_forward = 0.0
+        self._integral_lateral = 0.0
         self._integral = 0.0
         self._last_e_yaw = 0.0
         self._in_db = False
@@ -230,6 +254,8 @@ class PoseController(Node):
             with self._lock:
                 self._state = "idle"
                 self._target = None
+                self._integral_forward = 0.0
+                self._integral_lateral = 0.0
                 self._integral = 0.0
                 self._publish_cmd(0.0, 0.0, 0.0)
             return
@@ -242,6 +268,8 @@ class PoseController(Node):
                         "yaw": self._last_raw_yaw,
                     }
                     self._current["yaw"] = 0.0
+                    self._integral_forward = 0.0
+                    self._integral_lateral = 0.0
                     self._integral = 0.0
                     self._target = None
                     self._state = "idle"
@@ -279,6 +307,8 @@ class PoseController(Node):
                 "yaw": start["yaw"],
             }
             self._start_pose = start
+            self._integral_forward = 0.0
+            self._integral_lateral = 0.0
             self._integral = 0.0
             self._in_db = False
 
@@ -291,6 +321,8 @@ class PoseController(Node):
                 "yaw": target_yaw,
             }
             self._state = "rotating"
+            self._integral_forward = 0.0
+            self._integral_lateral = 0.0
             self._integral = 0.0
             self._in_db = False
 
@@ -321,6 +353,24 @@ class PoseController(Node):
         self._last_e_yaw = e
         return u
 
+    def _update_position_integrals(self, e_forward, e_lateral):
+        """Integrate forward/lateral errors with anti-windup."""
+        max_linear = max(self.max_vel_x, self.max_vel_y)
+        if self.ki_dist:
+            self._integral_forward = clamp(
+                self._integral_forward + e_forward * self.dt,
+                max_linear / max(self.ki_dist, 1e-6),
+            )
+        else:
+            self._integral_forward = 0.0
+        if self.ki_lateral:
+            self._integral_lateral = clamp(
+                self._integral_lateral + e_lateral * self.dt,
+                max_linear / max(self.ki_lateral, 1e-6),
+            )
+        else:
+            self._integral_lateral = 0.0
+
     def _compute_cmd(self):
         cur = self._current
         tgt = self._target
@@ -336,8 +386,15 @@ class PoseController(Node):
             ) * math.cos(travel_dir)
             e_yaw = normalize_angle(travel_dir - cur["yaw"])
 
-            vx_body = clamp(self.kp_dist * e_forward, self.max_vel_x)
-            vy_body = clamp(self.kp_lateral * e_lateral, self.max_vel_y)
+            self._update_position_integrals(e_forward, e_lateral)
+            vx_body = clamp(
+                self.kp_dist * e_forward + self.ki_dist * self._integral_forward,
+                self.max_vel_x,
+            )
+            vy_body = clamp(
+                self.kp_lateral * e_lateral + self.ki_lateral * self._integral_lateral,
+                self.max_vel_y,
+            )
             omega = clamp(self.kp_yaw * e_yaw, self.max_vel_yaw)
 
         elif state == "moving_y":
@@ -350,9 +407,17 @@ class PoseController(Node):
             ) * math.cos(travel_dir)
             e_yaw = normalize_angle(self._start_pose["yaw"] - cur["yaw"])
 
-            # Small correction along x to stay on the lateral line.
-            vx_body = clamp(-self.kp_lateral * e_lateral, self.max_vel_x)
-            vy_body = clamp(self.kp_dist * e_forward, self.max_vel_y)
+            self._update_position_integrals(e_forward, e_lateral)
+            # In moving_y, "forward" error is along the lateral line (vy) and
+            # lateral error is perpendicular to it (vx).
+            vy_body = clamp(
+                self.kp_dist * e_forward + self.ki_dist * self._integral_forward,
+                self.max_vel_y,
+            )
+            vx_body = clamp(
+                -self.kp_lateral * e_lateral - self.ki_lateral * self._integral_lateral,
+                self.max_vel_x,
+            )
             omega = clamp(self.kp_yaw * e_yaw, self.max_vel_yaw)
 
         elif state == "rotating":
@@ -425,6 +490,8 @@ class PoseController(Node):
                 self._publish_cmd(0.0, 0.0, 0.0)
                 self._state = "idle"
                 self._target = None
+                self._integral_forward = 0.0
+                self._integral_lateral = 0.0
                 self._integral = 0.0
                 self._source = "arrived"
                 return
