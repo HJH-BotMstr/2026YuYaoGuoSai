@@ -29,7 +29,7 @@ import yaml
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from utils.ArmController import ArmController
-from utils.RobotArm.three_Inverse_kinematics import CAM_OFFSET_X, CAM_OFFSET_Y
+from utils.RobotArm.three_Inverse_kinematics import CAM_J2_X, CAM_J2_Y
 
 
 L1, L2, L3 = 105.0, 110.0, 110.0
@@ -71,11 +71,10 @@ def forward_kinematics(angle_3: int, angle_4: int, angle_5: int):
     end = (J2[0] + L3 * math.cos(phi3),
            J2[1] + L3 * math.sin(phi3))
 
-    # 相机安装在末端连杆上，随 L3 一起旋转
-    cam_x = end[0] + (CAM_OFFSET_X * math.cos(phi3)
-                      - CAM_OFFSET_Y * math.sin(phi3))
-    cam_y = end[1] + (CAM_OFFSET_X * math.sin(phi3)
-                      + CAM_OFFSET_Y * math.cos(phi3))
+    # 相机安装在夹爪连杆坐标系 (J2原点, x沿L3, y垂直L3向外) 下的位置为 (CAM_J2_X, CAM_J2_Y)
+    # 世界坐标：cam = J2 + R(phi3) * [CAM_J2_X, CAM_J2_Y]^T
+    cam_x = J2[0] + CAM_J2_X * math.cos(phi3) - CAM_J2_Y * math.sin(phi3)
+    cam_y = J2[1] + CAM_J2_X * math.sin(phi3) + CAM_J2_Y * math.cos(phi3)
 
     return {
         "J0": J0,

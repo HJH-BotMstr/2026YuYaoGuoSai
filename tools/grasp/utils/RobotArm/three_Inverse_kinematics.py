@@ -12,13 +12,11 @@ L1 = 105     # L1底座
 L2 = 110     # L2
 L3 = 110     # L3末端
 
-# 相机在末端连杆坐标系下的固定偏移。
-# 坐标系定义：x 沿 L3 从关节 3 指向末端，y 垂直于 L3 指向左侧。
-# 由机械臂竖直（所有舵机 2047）时实测得到：
-#   末端坐标 (0, 325)，相机坐标 (5, 216.5)
-# 解得相机相对末端的偏移为 (-108.5, -5.0) mm
-CAM_OFFSET_X = -108.5
-CAM_OFFSET_Y = -5.0
+# 相机在夹爪连杆坐标系下的安装位置，单位 mm。
+# 坐标系定义：原点 J2，x 沿 L3 指向夹爪，y 垂直 L3 向外。
+# 实测安装位置：(CAM_J2_X, CAM_J2_Y) = (15, 50)
+CAM_J2_X = 15.0
+CAM_J2_Y = 50.0
 
 
 def Arm(x=None, y=None, theta_deg=0):
@@ -27,7 +25,7 @@ def Arm(x=None, y=None, theta_deg=0):
     输入末端目标坐标 (x, y) 与 L3 姿态角 theta_deg（L3 与 X 轴夹角，单位度）。
     返回 (angle_3, angle_4, angle_5) 舵机脉冲值。
     """
-    pi = 3.14
+    pi = math.pi
 
     if x is None:
         x = int(input("x:"))
@@ -82,8 +80,13 @@ def Arm(x=None, y=None, theta_deg=0):
 def ArmCamera(x=None, y=None, theta_deg=0):
     """
     相机坐标逆运动学。
-    输入期望的相机目标坐标 (x, y) 与 L3 姿态角 theta_deg，
-    内部换算成末端坐标后调用 Arm()，返回 (angle_3, angle_4, angle_5)。
+    输入期望的相机目标坐标 (x, y)（基座世界坐标系）与 L3 姿态角 theta_deg，
+    返回 (angle_3, angle_4, angle_5)。
+
+    相机安装位置在夹爪连杆坐标系下为 (CAM_J2_X, CAM_J2_Y)，原点为 J2。
+    世界坐标 = J2_world + R(phi3) * [CAM_J2_X, CAM_J2_Y]^T
+    反解：J2_world = cam_world - R(phi3) * [CAM_J2_X, CAM_J2_Y]^T
+    再由 J2 沿 phi3 走 L3 得 end_world，传入 Arm()。
     """
     if x is None:
         x = int(input("camera x:"))
@@ -94,11 +97,15 @@ def ArmCamera(x=None, y=None, theta_deg=0):
     cos_t = math.cos(theta)
     sin_t = math.sin(theta)
 
-    # 末端坐标 = 相机坐标 - 相机在末端坐标系下的偏移
-    end_x = x - (CAM_OFFSET_X * cos_t - CAM_OFFSET_Y * sin_t)
-    end_y = y - (CAM_OFFSET_X * sin_t + CAM_OFFSET_Y * cos_t)
+    # J2 的目标世界坐标
+    j2_x = x - (CAM_J2_X * cos_t - CAM_J2_Y * sin_t)
+    j2_y = y - (CAM_J2_X * sin_t + CAM_J2_Y * cos_t)
 
-    print("\n[相机目标] x=%.1f  y=%.1f  theta=%d°  ->  [末端目标] x=%.1f  y=%.1f"
-          % (x, y, theta_deg, end_x, end_y))
+    # end 的目标世界坐标（J2 沿 L3 方向延伸）
+    end_x = j2_x + L3 * cos_t
+    end_y = j2_y + L3 * sin_t
+
+    print("\n[相机目标] x=%.1f  y=%.1f  theta=%d°  ->  [J2目标] x=%.1f  y=%.1f  ->  [末端目标] x=%.1f  y=%.1f"
+          % (x, y, theta_deg, j2_x, j2_y, end_x, end_y))
 
     return Arm(end_x, end_y, theta_deg=theta_deg)
