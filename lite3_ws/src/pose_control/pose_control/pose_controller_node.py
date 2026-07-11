@@ -10,7 +10,10 @@ Uses the robot's official ROS2 stack:
 Subscribes to /move (geometry_msgs/Pose2D) for external body-frame commands:
   - x   : forward/back distance (m), positive = forward
   - y   : left/right distance (m), positive = left
-  - theta/yaw : relative rotation (deg), positive = counter-clockwise
+  - theta/yaw : rotation relative to current yaw (deg), positive = counter-clockwise
+
+Subscribes to command_topic (std_msgs/String, default /pose_control/command) for control:
+  cancel, reset_origin, pause, resume, quit
 
 Supports terminal meta-commands when ``enable_terminal`` is true:
   x+0.5   move forward 0.5 m
@@ -19,9 +22,11 @@ Supports terminal meta-commands when ``enable_terminal`` is true:
   y-0.1   move right 0.1 m
   yaw90   rotate to absolute 90 deg relative to the program-start origin
   90      alias for yaw90
-  c       cancel current motion / freeze
-  r       reset origin to current pose
-  q       quit
+  c / cancel      cancel current motion / freeze
+  r / reset_origin    reset origin to current pose
+  pause   pause current motion (resume to continue)
+  resume  resume paused motion
+  q / quit    quit
 """
 
 import math
@@ -114,7 +119,7 @@ class PoseController(Node):
 
         # 超声波避障。
         self.declare_parameter("obstacle_stop_dist", 0.35)   # 障碍物小于该距离时停止（m）
-        self.declare_parameter("obstacle_resume_hyst", 0.05) # 障碍物需再远离该距离才恢复运动（m）
+        self.declare_parameter("obstacle_resume_hyst", 0.05)  # 障碍物需再远离该距离才恢复运动（m）
 
         # 话题名与传感器方向。
         self.declare_parameter("sonar_topic", "/us_publisher/ultrasound_distance")
@@ -124,6 +129,9 @@ class PoseController(Node):
         # /move 外部指令相关。
         self.declare_parameter("move_topic", "/move")      # 外部目标话题名
         self.declare_parameter("enable_terminal", True)    # 是否开启终端输入
+
+        # 外部控制命令话题（默认启用，不依赖终端输入）。
+        self.declare_parameter("command_topic", "/pose_control/command")  # 控制命令话题名
 
         self.kp_dist = self.get_parameter("kp_dist").value
         self.ki_dist = self.get_parameter("ki_dist").value
@@ -149,6 +157,7 @@ class PoseController(Node):
         self.cmd_vel_topic = self.get_parameter("cmd_vel_topic").value
         self.move_topic = self.get_parameter("move_topic").value
         self.enable_terminal = self.get_parameter("enable_terminal").value
+        self.command_topic = self.get_parameter("command_topic").value
 
         # State
         self._lock = threading.Lock()
@@ -160,6 +169,7 @@ class PoseController(Node):
         self._start_pose = None
         self._move_yaw_target = None
         self._state = "idle"
+        self._paused_snapshot = None
         self._integral_forward = 0.0
         self._integral_lateral = 0.0
         self._integral = 0.0
@@ -179,6 +189,7 @@ class PoseController(Node):
         self.create_subscription(Bool, "/emergency_stop", self._estop_cb, 10)
         self.create_subscription(Float64, self.sonar_topic, self._sonar_cb, 10)
         self.create_subscription(Pose2D, self.move_topic, self._move_cb, 10)
+        self.create_subscription(String, self.command_topic, self._command_cb, 10)
 
         self.cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
         self.gait_pub = self.create_publisher(String, "/cmd_gait", 10)
@@ -190,6 +201,7 @@ class PoseController(Node):
             threading.Thread(target=self._input_loop, daemon=True).start()
 
         self.get_logger().info("Pose controller started; waiting for /leg_odom2 ...")
+        self.get_logger().info(f"Command topic: {self.command_topic}")
 
     # ---------- Perception ----------
     def _odom_cb(self, msg: Odometry):
@@ -246,11 +258,12 @@ class PoseController(Node):
             self._integral_lateral = 0.0
             self._integral = 0.0
             self._in_db = False
+            self._paused_snapshot = None
 
             yaw_deg = msg.theta
             if abs(yaw_deg) > 1e-6:
                 self._move_yaw_target = normalize_angle(
-                    self._origin["yaw"] + math.radians(yaw_deg)
+                    start["yaw"] + math.radians(yaw_deg)
                 )
             else:
                 self._move_yaw_target = None
@@ -269,6 +282,10 @@ class PoseController(Node):
                 f"Move command: x={msg.x:.3f}, y={msg.y:.3f}, yaw={yaw_deg:.2f}deg, "
                 f"state={self._state}"
             )
+
+    def _command_cb(self, msg: String):
+        """Handle external command string from /pose_control/command."""
+        self._handle(msg.data, source="topic")
 
     def _update_blocked(self, distance, direction):
         stop = self.obstacle_stop_dist
@@ -302,27 +319,35 @@ class PoseController(Node):
                 break
             self._handle(line)
 
-    def _handle(self, cmd):
-        c = cmd.lower()
+    def _handle(self, cmd, source="terminal"):
+        c = cmd.strip().lower()
+        if not c:
+            return
         if c in ("q", "quit"):
             self._shutdown = True
             return
         if c in ("h", "help"):
-            print(
-                "x+0.5/x-0.5  y+0.1/y-0.1  yaw90/90  c cancel  r reset origin  q quit"
+            help_text = (
+                "x+0.5/x-0.5  y+0.1/y-0.1  yaw90/90  "
+                "c/cancel  r/reset_origin  pause  resume  q/quit"
             )
+            if source == "terminal":
+                print(help_text)
+            else:
+                self.get_logger().info(help_text)
             return
-        if c == "c":
+        if c in ("c", "cancel"):
             with self._lock:
                 self._state = "idle"
                 self._target = None
                 self._move_yaw_target = None
+                self._paused_snapshot = None
                 self._integral_forward = 0.0
                 self._integral_lateral = 0.0
                 self._integral = 0.0
                 self._publish_cmd(0.0, 0.0, 0.0)
             return
-        if c == "r":
+        if c in ("r", "reset_origin"):
             with self._lock:
                 if self._last_raw_yaw is not None:
                     self._origin = {
@@ -335,8 +360,15 @@ class PoseController(Node):
                     self._integral_lateral = 0.0
                     self._integral = 0.0
                     self._move_yaw_target = None
+                    self._paused_snapshot = None
                     self._target = None
                     self._state = "idle"
+            return
+        if c == "pause":
+            self._pause()
+            return
+        if c == "resume":
+            self._resume()
             return
 
         move_match = self.MOVE_RE.match(c)
@@ -351,6 +383,9 @@ class PoseController(Node):
             deg = float(yaw_match.group(1))
             self._set_yaw_target(deg)
             return
+
+        if source == "topic":
+            self.get_logger().warn(f"Unknown command on {self.command_topic}: {cmd!r}")
 
     def _set_move_target(self, axis, value):
         with self._lock:
@@ -372,6 +407,7 @@ class PoseController(Node):
             }
             self._start_pose = start
             self._move_yaw_target = None
+            self._paused_snapshot = None
             self._integral_forward = 0.0
             self._integral_lateral = 0.0
             self._integral = 0.0
@@ -387,10 +423,56 @@ class PoseController(Node):
             }
             self._state = "rotating"
             self._move_yaw_target = None
+            self._paused_snapshot = None
             self._integral_forward = 0.0
             self._integral_lateral = 0.0
             self._integral = 0.0
             self._in_db = False
+
+    def _pause(self):
+        """Pause current motion, preserving target/state for resume()."""
+        with self._lock:
+            if self._state in ("idle", "paused"):
+                return
+            self._paused_snapshot = {
+                "state": self._state,
+                "target": self._target,
+                "move_yaw_target": self._move_yaw_target,
+                "start_pose": self._start_pose,
+                "integral_forward": self._integral_forward,
+                "integral_lateral": self._integral_lateral,
+                "integral": self._integral,
+                "in_db": self._in_db,
+            }
+            self._state = "paused"
+            self._target = None
+            self._move_yaw_target = None
+            self._start_pose = None
+            self._integral_forward = 0.0
+            self._integral_lateral = 0.0
+            self._integral = 0.0
+            self._in_db = False
+            self._publish_cmd(0.0, 0.0, 0.0)
+            self._source = "paused"
+            self.get_logger().info("Motion paused")
+
+    def _resume(self):
+        """Resume a previously paused motion."""
+        with self._lock:
+            if self._state != "paused" or self._paused_snapshot is None:
+                return
+            snap = self._paused_snapshot
+            self._state = snap["state"]
+            self._target = snap["target"]
+            self._move_yaw_target = snap["move_yaw_target"]
+            self._start_pose = snap["start_pose"]
+            self._integral_forward = snap["integral_forward"]
+            self._integral_lateral = snap["integral_lateral"]
+            self._integral = snap["integral"]
+            self._in_db = snap["in_db"]
+            self._paused_snapshot = None
+            self._source = "resumed"
+            self.get_logger().info("Motion resumed")
 
     # ---------- Control ----------
     def _error_yaw(self, target_yaw, current_yaw):
@@ -545,6 +627,11 @@ class PoseController(Node):
             if self._state == "idle" or self._target is None:
                 self._publish_cmd(0.0, 0.0, 0.0)
                 self._source = "idle"
+                return
+
+            if self._state == "paused":
+                self._publish_cmd(0.0, 0.0, 0.0)
+                self._source = "paused"
                 return
 
             vx_body, vy_body, omega = self._compute_cmd()

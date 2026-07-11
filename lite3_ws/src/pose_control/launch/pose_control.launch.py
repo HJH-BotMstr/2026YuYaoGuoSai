@@ -12,6 +12,7 @@ def generate_launch_description():
             parameters=[{
                 'enable_terminal': True,
                 'obstacle_stop_dist': 0.35,
+                'command_topic': '/pose_control/command',
             }],
         ),
     ])

@@ -7,6 +7,7 @@ Lite3 位姿闭环控制 ROS2 包。基于官方 ROS2 栈的里程计做位置/�
 - **位置闭环移动**：接收 `/move` 话题的 `(x, y, yaw)` 三元组，按机身坐标系相对移动，到达后自动停止。
 - **航向闭环旋转**：支持原地旋转到相对程序启动原点的目标角度。
 - **超声波避障**：后退方向遇到障碍物（默认 0.35 m）时停止，移开后自动继续。
+- **外部控制命令**：默认订阅 `/pose_control/command`（`std_msgs/String`），支持 `cancel`、`reset_origin`、`pause`、`resume`、`quit` 等命令，无需依赖终端输入。
 - **终端调试**：默认开启终端命令输入，支持 `x+0.5`、`y-0.1`、`yaw90` 等元指令（可用 `enable_terminal` 关闭）。
 
 ## 订阅
@@ -16,7 +17,8 @@ Lite3 位姿闭环控制 ROS2 包。基于官方 ROS2 栈的里程计做位置/�
 | `/leg_odom2` | `nav_msgs/Odometry` | 官方栈发布的足上里程计，用于位置与航向反馈。 |
 | `/us_publisher/ultrasound_distance` | `std_msgs/Float64` | 后向超声波距离（米），参数 `sonar_topic` 可修改。 |
 | `/emergency_stop` | `std_msgs/Bool` | 急停信号，`true` 时强制输出零速度。 |
-| `/move` | `geometry_msgs/Pose2D` | 外部目标指令：`x` 前进/后退，`y` 左/右平移，`theta` 相对旋转（度）。 |
+| `/move` | `geometry_msgs/Pose2D` | 外部目标指令：`x` 前进/后退，`y` 左/右平移，`theta` 相对当前航向旋转（度）。 |
+| `/pose_control/command` | `std_msgs/String` | 外部控制命令：`cancel`/`c`、`reset_origin`/`r`、`pause`、`resume`、`quit`/`q`（参数 `command_topic` 可修改）。 |
 
 ## 发布
 
@@ -65,7 +67,7 @@ ros2 launch pose_control pose_control.launch.py
 |---|---|---|
 | `x` | 米 | 沿机身前进方向移动距离，正为前进，负为后退。 |
 | `y` | 米 | 沿机身左侧方向移动距离，正为左移，负为右移。 |
-| `theta` | 度 | 相对程序启动原点的旋转角度，正为逆时针。 |
+| `theta` | 度 | 相对当前航向的旋转角度，`0` 表示不旋转，正为逆时针。 |
 
 示例：
 
@@ -75,9 +77,43 @@ ros2 topic pub /move geometry_msgs/Pose2D "{x: 0.5, y: 0.0, theta: 0.0}" --once
 
 # 左移 0.1 m 并逆时针旋转 90°
 ros2 topic pub /move geometry_msgs/Pose2D "{x: 0.0, y: 0.1, theta: 90.0}" --once
+
+# 当前航向 45° 时，顺时针旋转 45° 回到 0°
+ros2 topic pub /move geometry_msgs/Pose2D "{x: 0.0, y: 0.0, theta: -45.0}" --once
 ```
 
 > 当前环境 `ros2cli==0.9.13` 异常，若命令行不可用，可写临时 Python 发布节点或修复 ros2cli。
+
+## 控制命令话题（command_topic）
+
+节点默认订阅 `/pose_control/command`（类型 `std_msgs/String`），用于接收外部控制指令。该话题**始终启用**，不依赖 `enable_terminal`。
+
+| 命令 | 功能 |
+|---|---|
+| `cancel` / `c` | 取消当前运动并清零速度 |
+| `reset_origin` / `r` | 重置程序启动原点为当前位姿 |
+| `pause` | 暂停当前运动，保存目标/状态以便恢复 |
+| `resume` | 恢复之前被 `pause` 暂停的运动 |
+| `quit` / `q` | 退出节点 |
+| `help` / `h` | 显示帮助 |
+
+示例：
+
+```bash
+# 暂停
+ros2 topic pub /pose_control/command std_msgs/String "data: 'pause'" --once
+
+# 恢复
+ros2 topic pub /pose_control/command std_msgs/String "data: 'resume'" --once
+
+# 取消当前运动
+ros2 topic pub /pose_control/command std_msgs/String "data: 'cancel'" --once
+
+# 重置原点
+ros2 topic pub /pose_control/command std_msgs/String "data: 'reset_origin'" --once
+```
+
+> 在 `pause` 状态下发送新的 `/move` 或终端移动指令，会丢弃暂停快照并执行新指令。
 
 ## 终端命令（enable_terminal=true 时）
 
@@ -86,10 +122,12 @@ ros2 topic pub /move geometry_msgs/Pose2D "{x: 0.0, y: 0.1, theta: 90.0}" --once
 | `x+0.5` / `x-0.5` | 前进/后退 0.5 m |
 | `y+0.1` / `y-0.1` | 左/右平移 0.1 m |
 | `yaw90` 或 `90` | 旋转到相对程序启动原点 90° |
-| `c` | 取消当前运动并清零速度 |
-| `r` | 重置程序启动原点为当前位姿 |
-| `q` | 退出节点 |
-| `h` | 显示帮助 |
+| `c` / `cancel` | 取消当前运动并清零速度 |
+| `r` / `reset_origin` | 重置程序启动原点为当前位姿 |
+| `pause` | 暂停当前运动 |
+| `resume` | 恢复暂停的运动 |
+| `q` / `quit` | 退出节点 |
+| `h` / `help` | 显示帮助 |
 
 ## 关键参数
 
@@ -110,6 +148,7 @@ ros2 topic pub /move geometry_msgs/Pose2D "{x: 0.0, y: 0.1, theta: 90.0}" --once
 | `obstacle_stop_dist` | `float` | `0.35` | 超声波触发停止距离（m） |
 | `enable_terminal` | `bool` | `true` | 是否开启终端输入 |
 | `move_topic` | `string` | `/move` | 外部目标话题名 |
+| `command_topic` | `string` | `/pose_control/command` | 外部控制命令话题名 |
 
 修改参数示例：
 
@@ -133,8 +172,10 @@ ros2 run pose_control pose_control --ros-args -p obstacle_stop_dist:=0.30 -p ena
 
 ## 调试
 
-若需要关闭终端输入并仅通过 `/move` 控制：
+若需要关闭终端输入并仅通过 `/move` 与 `/pose_control/command` 控制：
 
 ```bash
 ros2 run pose_control pose_control --ros-args -p enable_terminal:=false
 ```
+
+此时仍可通过 `/pose_control/command` 发送 `cancel`、`reset_origin`、`pause`、`resume`、`quit` 等命令。
