@@ -81,10 +81,10 @@ class PoseController(Node):
 
         # 可调参数
         # 位置 / 横向 PI 增益：输出速度 = kp × 误差 + ki × 积分（单位：m/s）。
-        self.declare_parameter("kp_dist", 1.0)          # 前后位置 P 增益
-        self.declare_parameter("ki_dist", 0.0)          # 前后位置 I 增益
-        self.declare_parameter("kp_lateral", 1.0)       # 横向修正 P 增益
-        self.declare_parameter("ki_lateral", 0.0)       # 横向修正 I 增益
+        self.declare_parameter("kp_dist", 0.5)          # 前后位置 P 增益
+        self.declare_parameter("ki_dist", 0.1)          # 前后位置 I 增益
+        self.declare_parameter("kp_lateral", 0.5)       # 横向修正 P 增益
+        self.declare_parameter("ki_lateral", 0.1)       # 横向修正 I 增益
 
         # 航向 PID 增益。注意：官方 ROS 约定 angular.z > 0 为逆时针。
         self.declare_parameter("kp_yaw", 2.0)           # 航向 P 增益（rad/s 每 rad 误差）
@@ -92,8 +92,8 @@ class PoseController(Node):
         self.declare_parameter("ki_yaw", 0.0)           # 航向 I 增益（当前未使用）
 
         # 发布到 /cmd_vel 的速度上限。
-        self.declare_parameter("max_vel_x", 0.3)        # 最大前后速度（m/s）
-        self.declare_parameter("max_vel_y", 0.2)        # 最大左右速度（m/s）
+        self.declare_parameter("max_vel_x", 1.1)        # 最大前后速度（m/s）
+        self.declare_parameter("max_vel_y", 0.6)        # 最大左右速度（m/s）
         self.declare_parameter("max_vel_yaw", 1.6)      # 最大旋转角速度（rad/s）
 
         # 到位阈值。当相关误差都小于该阈值时，控制器认为已到达目标并停止。
