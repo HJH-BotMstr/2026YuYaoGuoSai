@@ -30,7 +30,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("main")
 
-
 # ─────────────────────────── 辅助 ────────────────────────────────────────── #
 
 def load_config(path: str) -> dict:
@@ -44,7 +43,6 @@ def _pc_wait(prompt: str) -> None:
         input(prompt)
     except EOFError:
         pass   # 非交互环境（管道/测试）直接跳过
-
 
 # ─────────────────────────── phase_0 ─────────────────────────────────────── #
 
@@ -91,7 +89,6 @@ def phase_0_init(cfg: dict, mode: str) -> dict | None:
         logger.exception("初始化失败: %s", e)
         return None
 
-
 # ─────────────────────────── phase_1 ─────────────────────────────────────── #
 
 def phase_1_standby(ctx: dict) -> bool:
@@ -110,7 +107,6 @@ def phase_1_standby(ctx: dict) -> bool:
     if ctx["mode"] == "pc":
         _pc_wait("确认机器狗已到达 place1 停稳，按回车继续...")
     return True
-
 
 # ─────────────────────────── phase_2 ─────────────────────────────────────── #
 
@@ -155,7 +151,6 @@ def phase_2_detect(ctx: dict) -> dict | None:
 
     logger.error("phase_2 超时 (%.1fs)，未检测到稳定色块", timeout)
     return None
-
 
 # ─────────────────────────── phase_3 ─────────────────────────────────────── #
 
@@ -207,7 +202,6 @@ def phase_3_align(ctx: dict, stable: dict) -> bool:
     logger.error("横向对齐超过最大轮次 (%d)，仍未对齐 X_cam=%.1fmm", max_rounds, X_cam)
     return False
 
-
 # ─────────────────────────── phase_4 ─────────────────────────────────────── #
 
 def phase_4_approach_grasp(ctx: dict, stable: dict) -> bool:
@@ -255,7 +249,6 @@ def phase_4_approach_grasp(ctx: dict, stable: dict) -> bool:
         logger.error("抓取失败（已重试 %s 次）", cfg_g.get("grasp_retry_max", 3))
     return success
 
-
 # ─────────────────────────── phase_5 ─────────────────────────────────────── #
 
 def phase_5_transport(ctx: dict) -> bool:
@@ -267,7 +260,6 @@ def phase_5_transport(ctx: dict) -> bool:
     except Exception as e:
         logger.error("运输姿态失败: %s", e)
         return False
-
 
 # ─────────────────────────── phase_6 ─────────────────────────────────────── #
 
@@ -311,7 +303,6 @@ def phase_6_place(ctx: dict) -> bool:
         logger.error("放置失败: %s", e)
         return False
 
-
 # ─────────────────────────── phase_7 ─────────────────────────────────────── #
 
 def phase_7_home(ctx: dict) -> None:
@@ -326,7 +317,6 @@ def phase_7_home(ctx: dict) -> None:
         cv2.destroyAllWindows()
         ctx["arm"].finalize()
         logger.info("资源已释放")
-
 
 # ─────────────────────────── 主流程 ──────────────────────────────────────── #
 

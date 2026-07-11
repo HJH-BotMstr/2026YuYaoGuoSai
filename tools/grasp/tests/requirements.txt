@@ -8,3 +8,7 @@ python3 tests/test_arm_grasp.py --mode pose
 python3 tests/test_arm_grasp.py --mode gripper
 
 python3 tests/test_arm_grasp.py --mode grasp --dis 220 --height 25
+
+python3 tests/main.py 
+
+sudo chmod 666 /dev/ttyUSB0
