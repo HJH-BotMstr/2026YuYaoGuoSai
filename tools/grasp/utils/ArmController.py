@@ -29,19 +29,19 @@ SCS_1_STATUS_VALUE    = 1847   #2047
 SCS_2_INIT_VALUE      = 2047
 SCS_2_STATUS_VALUE    = 2047
 
-SCS_3_INIT_VALUE      = 3000   #3080
+SCS_3_INIT_VALUE      = 1450   #3080
 SCS_3_STATUS_VALUE    = 2800
-SCS_3_MOVE_VALUE      = 1500   #1070
+SCS_3_MOVE_VALUE      = 1600   #1070
 SCS_3_TRANSPORT1_VALUE= 2000   #3060
 SCS_3_TRANSPORT2_VALUE= 2940
 
-SCS_4_INIT_VALUE      = 1200
+SCS_4_INIT_VALUE      = 650
 SCS_4_STATUS_VALUE    = 1100
 SCS_4_MOVE_VALUE      = 650    #540
 SCS_4_TRANSPORT1_VALUE= 1024
 SCS_4_TRANSPORT2_VALUE= 1430
 
-SCS_5_INIT_VALUE      = 2400
+SCS_5_INIT_VALUE      = 1847
 SCS_5_STATUS_VALUE    = 3030
 SCS_5_MOVE_VALUE      = 2047   #1540
 SCS_5_TRANSPORT1_VALUE= 2200
@@ -69,8 +69,6 @@ _DEFAULT_CFG = {
     "wait_position_timeout":  5.0,
     "wait_position_threshold":30,
 }
-
-
 class ArmController:
 
     def __init__(self, device: str = "/dev/ttyUSB0", cfg: dict | None = None):
@@ -238,7 +236,6 @@ class ArmController:
         pos_timeout = float(self._cfg["wait_position_timeout"])
         close_val   = int(self._cfg["gripper_close_val"])
         # 空夹时夹爪能夹到底，位置差小；夹到物体时夹不到底，位置差大
-        # 阈值：实际位置与目标差超过此值视为夹住
         pos_gap_thr = int(self._cfg.get("gripper_pos_gap_threshold", 100))
 
         for attempt in range(1, max_retry + 1):
@@ -267,7 +264,7 @@ class ArmController:
                 time.sleep(0.05)
             time.sleep(0.1)
 
-            # 读夹爪实际位置
+            # 读夹爪实际位置 
             actual_pos, comm, _ = self.packetHandler.ReadPos(SCS_ID_1)
             pos_gap = abs(actual_pos - close_val)
             logger.info("夹爪位置: actual=%d target=%d gap=%d (阈值 %d) comm=%d",
