@@ -55,9 +55,11 @@ def main():
 
         # 状态栏
         if result:
+            X, Y, Z = result["pos_3d"]
             status = (f"color={result['color']}  "
-                      f"offset_x={result['center_offset_x']}px  "
-                      f"dist={result['distance_mm']:.0f}mm")
+                      f"off={result['center_offset_x']}px  "
+                      f"dist={result['distance_mm']:.0f}mm  "
+                      f"3D X={X:.0f} Y={Y:.0f} Z={Z:.0f}mm")
             color_bgr = (0, 0, 255) if result["color"] == "red" else (0, 200, 0)
         else:
             status = "no block detected"
