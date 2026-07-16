@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-多线程版本仪表盘识别。
+多线程版本仪表盘识别 + 预录 MP3 语音播报。
 
 不修改 realtime_gauge.py，通过 import 复用其识别函数。
 解决 Jetson 上 Python 单线程处理慢导致的画面延迟和卡顿问题。
+
+语音播报规则：
+  - 根据识别到的字母（A/B/C/D）和区域（YELLOW=偏低/RED=偏高/GREEN=居中）
+  - 自动播放 /home/ysc/2026YuYaoGuoSai/assets/mp3 下对应 MP3 文件
+  - 文件名规则：AL/AH/AM, BL/BH/BM, CL/CH/CM, DL/DH/DM
 
 按 q 退出。
 """
@@ -12,15 +17,14 @@
 import sys
 sys.path.insert(0, '/home/ysc/detect')
 
+import os
+import shutil
+import tempfile
 import cv2
 import math
-import os
-import queue
-import shutil
-import subprocess
-import tempfile
 import threading
 import time
+import subprocess
 import numpy as np
 
 try:
@@ -43,143 +47,67 @@ from realtime_gauge import (
     classify,
 )
 
-# ============================================================================
-# 语音播报配置（在机器人上运行前请根据实际情况修改）
-# ============================================================================
-VOICE_ENABLED = True            # 是否启用语音播报
-VOICE_CARD = 3                  # USB 音响声卡号，可用 aplay -l 查看
-VOICE_DEVICE = 0                # 设备号
-VOICE_SPEED = 160               # TTS 语速（仅 espeak 有效）
-# 预录音频目录。如果设为 None 或目录不存在，则使用 espeak 在线合成。
-# 目录内需包含：high.wav、low.wav、center.wav、unknown.wav
-VOICE_AUDIO_DIR = None
-
 
 # ============================================================================
-# 语音播报器（支持 espeak TTS 或预录音频文件）
+# 语音播报配置
 # ============================================================================
 
-class VoiceAnnouncer:
+DEFAULT_MP3_DIR = '/home/ysc/2026YuYaoGuoSai/assets/mp3'
+
+# 区域 tag -> 文件名后缀（L=偏低 Low, H=偏高 High, M=居中 Middle）
+ZONE_SUFFIX = {
+    'YELLOW': 'L',
+    'RED': 'H',
+    'GREEN': 'M',
+}
+
+
+def get_voice_filename(letter, tag):
     """
-    异步语音播报器。
-
-    - 默认使用 espeak 将中文文本合成为语音并通过 aplay 播放。
-    - 如果 VOICE_AUDIO_DIR 指向一个包含对应 wav/mp3 文件的目录，则直接播放文件。
-    - 相同内容不会重复播报，避免 0.3s 一次的识别循环造成连续噪音。
+    根据字母和区域 tag 生成对应的 MP3 文件名。
+    支持 A/B/C/D 四个字母，无对应文件返回 None。
     """
+    if letter not in 'ABCD':
+        return None
+    suffix = ZONE_SUFFIX.get(tag)
+    if suffix is None:
+        return None
+    return f"{letter}{suffix}.mp3"
 
-    # 标签 -> (位置词, 状态词, 预录音频文件 stem)
-    TAG_INFO = {
-        "RED":    ("偏高", "异常", "high"),
-        "YELLOW": ("偏低", "异常", "low"),
-        "GREEN":  ("居中", "正常", "center"),
-        "UNKNOWN":("未知", "未知", "unknown"),
-    }
 
-    def __init__(self, enabled=True, card=3, device=0, speed=160, audio_dir=None):
-        self.enabled = enabled
-        self.card = card
-        self.device = device
-        self.speed = speed
-        self.audio_dir = audio_dir
-        self._last_text = None
-        self._queue = queue.Queue()
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
+def play_mp3(filepath):
+    """
+    播放音频文件（支持 .mp3/.m4a/.mov 等实际为 QuickTime/MP4 的格式）。
+    策略：用 ffmpeg 解码成 WAV，再用 aplay -D pulse 播放，
+    这样走的是已经验证过的 pulseaudio 路径。
+    """
+    if not os.path.isfile(filepath):
+        raise FileNotFoundError(f"音频文件不存在: {filepath}")
 
-    @staticmethod
-    def _have_command(name):
-        return shutil.which(name) is not None
+    if shutil.which('ffmpeg') is None:
+        raise RuntimeError("缺少 ffmpeg，请安装：sudo apt install ffmpeg")
+    if shutil.which('aplay') is None:
+        raise RuntimeError("缺少 aplay，请安装：sudo apt install alsa-utils")
 
-    def _play_file(self, path):
-        if not os.path.isfile(path):
-            print(f"[语音] 找不到音频文件: {path}")
-            return
-        ext = os.path.splitext(path)[1].lower()
-        if ext == ".mp3":
-            if not self._have_command("mpg123"):
-                print("[语音] 缺少 mpg123，无法播放 mp3")
-                return
-            cmd = ["mpg123", "-a", f"hw:CARD={self.card}", path]
-        elif ext == ".wav":
-            if not self._have_command("aplay"):
-                print("[语音] 缺少 aplay，无法播放 wav")
-                return
-            cmd = ["aplay", "-D", f"plughw:{self.card},{self.device}", path]
-        else:
-            print(f"[语音] 不支持的音频格式: {ext}")
-            return
-        subprocess.run(cmd, check=False, capture_output=True)
+    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+        tmp_path = tmp.name
 
-    def _play_tts(self, text):
-        if not self._have_command("espeak"):
-            print("[语音] 缺少 espeak，无法 TTS")
-            return
-        if not self._have_command("aplay"):
-            print("[语音] 缺少 aplay，无法播放")
-            return
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp_path = tmp.name
-        try:
-            subprocess.run(
-                ["espeak", text, "-v", "zh", "-s", str(self.speed), "-w", tmp_path],
-                check=False, capture_output=True
-            )
-            subprocess.run(
-                ["aplay", "-D", f"plughw:{self.card},{self.device}", tmp_path],
-                check=False, capture_output=True
-            )
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-
-    def _loop(self):
-        while True:
-            item = self._queue.get()
-            if item is None:
-                break
-            if not self.enabled:
-                continue
-            text, file_stem, generic_stem = item
-
-            # 优先使用预录音频；找不到对应文件则回退到 TTS
-            played = False
-            if self.audio_dir and os.path.isdir(self.audio_dir):
-                for ext in (".wav", ".mp3"):
-                    for stem in (file_stem, generic_stem):
-                        path = os.path.join(self.audio_dir, stem + ext)
-                        if os.path.isfile(path):
-                            self._play_file(path)
-                            played = True
-                            break
-                    if played:
-                        break
-            if not played:
-                self._play_tts(text)
-
-    def announce(self, tag, letter=None):
-        """
-        发起一次播报。
-
-        例如：
-          tag=RED,    letter=A -> "A区域仪表盘显示偏高，状态异常"
-          tag=GREEN,  letter=B -> "B区域仪表盘显示居中，状态正常"
-          tag=YELLOW, letter=None -> "未知区域仪表盘显示偏低，状态异常"
-        """
-        if not self.enabled:
-            return
-        pos, state, stem = self.TAG_INFO.get(tag, ("未知", "未知", "unknown"))
-        zone = letter if letter in "ABCD" else "未知"
-        text = f"{zone}区域仪表盘显示{pos}，状态{state}"
-        if text == self._last_text:
-            return
-        self._last_text = text
-        file_stem = f"{letter}_{stem}" if letter in "ABCD" else stem
-        self._queue.put((text, file_stem, stem))
-
-    def close(self):
-        self._queue.put(None)
-        self._thread.join(timeout=2.0)
+    try:
+        # ffmpeg 解码任意音频为 WAV
+        subprocess.run(
+            ['ffmpeg', '-y', '-i', filepath,
+             '-vn', '-acodec', 'pcm_s16le', '-ar', '44100', '-ac', '2',
+             tmp_path],
+            check=True, capture_output=True
+        )
+        # 用 pulseaudio 播放 WAV
+        subprocess.run(
+            ['aplay', '-D', 'pulse', tmp_path],
+            check=True, capture_output=True
+        )
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 # ============================================================================
@@ -398,7 +326,7 @@ def detect_ptr_smooth(polar, smooth_kernel=5):
     """
     # 对极坐标图做轻微高斯模糊
     polar_blur = cv2.GaussianBlur(polar, (3, 3), 0)
-realtime_gauge_async_new.py
+
     rows, cols = polar_blur.shape
     clip = int(rows * 0.20)
     col_means = np.mean(polar_blur[clip:, :], axis=0).astype(np.float32)
@@ -431,7 +359,8 @@ class AsyncGaugeProcessor:
     - 主线程：实时显示画面，并叠加最近一次识别结果
     """
 
-    def __init__(self, camera_id=6, width=640, height=480, process_interval=0.3):
+    def __init__(self, camera_id=6, width=640, height=480, process_interval=0.3,
+                 voice_enabled=True, mp3_dir=DEFAULT_MP3_DIR):
         self.cap = init_camera(camera_id, width, height)
         if self.cap is None or not self.cap.isOpened():
             raise RuntimeError("无法打开摄像头")
@@ -454,17 +383,26 @@ class AsyncGaugeProcessor:
         self.letter_skip = 5
         self.last_letter = None
 
+        # 新增：MP3 语音播报配置
+        self.voice_enabled = voice_enabled
+        self.mp3_dir = mp3_dir
+        self.last_voice_state = None  # 避免重复播报
+        self.voice_thread = None
+
+        if self.voice_enabled:
+            has_ffmpeg = shutil.which('ffmpeg') is not None
+            has_aplay = shutil.which('aplay') is not None
+            if not has_ffmpeg or not has_aplay:
+                print("警告：未找到 ffmpeg 或 aplay，语音播报功能不可用")
+                print("请执行：sudo apt install ffmpeg alsa-utils")
+                self.voice_enabled = False
+            else:
+                print(f"  语音播报已启用（MP3 目录: {mp3_dir}）")
+        else:
+            print("  语音播报未启用")
+
         self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.process_thread = threading.Thread(target=self._process_loop, daemon=True)
-
-        # 初始化语音播报器
-        self.announcer = VoiceAnnouncer(
-            enabled=VOICE_ENABLED,
-            card=VOICE_CARD,
-            device=VOICE_DEVICE,
-            speed=VOICE_SPEED,
-            audio_dir=VOICE_AUDIO_DIR,
-        )
 
         self.capture_thread.start()
         self.process_thread.start()
@@ -504,12 +442,55 @@ class AsyncGaugeProcessor:
                 state = self._process_frame(frame)
                 if state is not None:
                     self.last_state = state
+                    self._speak_state(state)
             except Exception as e:
                 print(f"\n识别失败: {e}")
             finally:
                 self.is_processing = False
 
             time.sleep(self.process_interval)
+
+    # ------------------------------------------------------------------
+    # 语音播报：状态变化时播放对应 MP3，避免连续重复
+    # ------------------------------------------------------------------
+    def _speak_state(self, state):
+        if not self.voice_enabled:
+            print("[语音调试] voice_enabled=False，跳过")
+            return
+
+        letter = state.get('letter')
+        tag = state.get('tag')
+        print(f"[语音调试] 收到 state: letter={letter}, tag={tag}")
+        if not letter or not tag:
+            print("[语音调试] letter 或 tag 为空，跳过")
+            return
+
+        current = (letter, tag)
+        if self.last_voice_state == current:
+            print("[语音调试] 状态未变化，跳过")
+            return
+        self.last_voice_state = current
+
+        filename = get_voice_filename(letter, tag)
+        if filename is None:
+            print(f"[语音调试] 无对应音频：letter={letter}, tag={tag}")
+            return
+
+        filepath = os.path.join(self.mp3_dir, filename)
+        if not os.path.isfile(filepath):
+            print(f"[语音调试] 文件不存在：{filepath}")
+            return
+
+        print(f"[语音播报] 播放 {filename}")
+
+        def _play():
+            try:
+                play_mp3(filepath)
+            except Exception as e:
+                print(f"[语音播报失败] {e}")
+
+        self.voice_thread = threading.Thread(target=_play, daemon=True)
+        self.voice_thread.start()
 
     # ------------------------------------------------------------------
     # 识别逻辑：复用 realtime_gauge.py 的函数，圆检测用快速版
@@ -565,12 +546,10 @@ class AsyncGaugeProcessor:
             letter = recognize_letter(frame, cx, cy, r)
             if letter is not None:
                 self.last_letter = letter
+            print(f"  [字母调试] 本帧识别结果: {letter}, 缓存 last_letter: {self.last_letter}")
         else:
             letter = self.last_letter
         t10 = time.time()
-
-        # 语音播报（包含字母 + 状态，相同内容不会重复播报）
-        self.announcer.announce(tag, letter)
 
         print(
             f"\n  圆: r={r:.1f} | "
@@ -654,7 +633,6 @@ class AsyncGaugeProcessor:
                 self.running = False
                 break
 
-        self.announcer.close()
         self.cap.release()
         cv2.destroyAllWindows()
         print()
@@ -665,12 +643,14 @@ class AsyncGaugeProcessor:
 # ============================================================================
 
 def main():
-    print("启动多线程仪表盘识别...")
+    print("启动多线程仪表盘识别 + MP3 语音播报...")
     processor = AsyncGaugeProcessor(
-        camera_id=6,
+        camera_id=4,
         width=640,
         height=480,
-        process_interval=0.3   # 每 300ms 识别一次，画面保持流畅
+        process_interval=0.3,   # 每 300ms 识别一次，画面保持流畅
+        voice_enabled=True,
+        mp3_dir=DEFAULT_MP3_DIR,
     )
     processor.run()
 
