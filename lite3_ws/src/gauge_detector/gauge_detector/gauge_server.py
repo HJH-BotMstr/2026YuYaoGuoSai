@@ -11,6 +11,9 @@ import sys
 sys.path.insert(0, '/home/ysc/detect')
 
 import math
+import os
+import shutil
+import tempfile
 import threading
 import time
 import subprocess
@@ -21,6 +24,51 @@ import rclpy
 from rclpy.node import Node
 
 from gauge_detector_interfaces.srv import GaugeDetect
+
+# 语音播报配置
+DEFAULT_MP3_DIR = '/home/ysc/2026YuYaoGuoSai/assets/mp3'
+ZONE_SUFFIX = {
+    'YELLOW': 'L',
+    'RED': 'H',
+    'GREEN': 'M',
+}
+
+
+def get_voice_filename(letter, tag):
+    """根据字母和区域 tag 生成对应的 MP3 文件名。支持 A/B/C/D。"""
+    if letter not in 'ABCD':
+        return None
+    suffix = ZONE_SUFFIX.get(tag)
+    if suffix is None:
+        return None
+    return f"{letter}{suffix}.mp3"
+
+
+def play_mp3(filepath):
+    """用 ffmpeg 解码成 WAV，再用 aplay -D pulse 播放。"""
+    if not os.path.isfile(filepath):
+        raise FileNotFoundError(f"音频文件不存在: {filepath}")
+    if shutil.which('ffmpeg') is None:
+        raise RuntimeError("缺少 ffmpeg")
+    if shutil.which('aplay') is None:
+        raise RuntimeError("缺少 aplay")
+
+    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        subprocess.run(
+            ['ffmpeg', '-y', '-i', filepath,
+             '-vn', '-acodec', 'pcm_s16le', '-ar', '44100', '-ac', '2',
+             tmp_path],
+            check=True, capture_output=True
+        )
+        subprocess.run(
+            ['aplay', '-D', 'pulse', tmp_path],
+            check=True, capture_output=True
+        )
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 try:
     import pytesseract
@@ -229,15 +277,19 @@ class GaugeServerNode(Node):
         super().__init__('gauge_server')
 
         # 参数声明
-        self.declare_parameter('camera_id', 6)
+        self.declare_parameter('camera_id', 4)
         self.declare_parameter('width', 640)
         self.declare_parameter('height', 480)
         self.declare_parameter('preheat_frames', 120)
+        self.declare_parameter('voice_enabled', True)
+        self.declare_parameter('mp3_dir', DEFAULT_MP3_DIR)
 
         camera_id = self.get_parameter('camera_id').value
         width = self.get_parameter('width').value
         height = self.get_parameter('height').value
         preheat_frames = self.get_parameter('preheat_frames').value
+        voice_enabled = self.get_parameter('voice_enabled').value
+        mp3_dir = self.get_parameter('mp3_dir').value
 
         self.get_logger().info(f'初始化摄像头 /dev/video{camera_id} ...')
         self.cap = init_camera(camera_id, width, height)
@@ -255,6 +307,18 @@ class GaugeServerNode(Node):
         self.frame_count = 0
         self.letter_skip = 5
         self.last_letter = None
+
+        # 语音播报状态
+        self.voice_enabled = voice_enabled
+        self.mp3_dir = mp3_dir
+        self.last_voice_state = None
+        self.voice_thread = None
+        if self.voice_enabled:
+            if shutil.which('ffmpeg') is None or shutil.which('aplay') is None:
+                self.get_logger().warn('未找到 ffmpeg 或 aplay，语音播报已禁用')
+                self.voice_enabled = False
+            else:
+                self.get_logger().info(f'语音播报已启用（MP3 目录: {mp3_dir}）')
 
         # 后台取图线程
         self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
@@ -318,7 +382,7 @@ class GaugeServerNode(Node):
         }
 
     def detect_callback(self, request, response):
-        """服务回调：取最新一帧识别并返回结果。"""
+        """服务回调：取最新一帧识别并返回结果，状态变化时播报语音。"""
         if self.is_processing:
             response.success = False
             response.message = '已有识别请求正在处理，请稍后再试'
@@ -344,6 +408,8 @@ class GaugeServerNode(Node):
             response.zone = state['tag']
             response.state = 'normal' if state['tag'] == 'GREEN' else 'abnormal'
             response.message = '识别成功'
+
+            self._speak_state(state)
         except Exception as e:
             self.get_logger().error(f'识别异常: {e}')
             response.success = False
@@ -352,6 +418,42 @@ class GaugeServerNode(Node):
             self.is_processing = False
 
         return response
+
+    def _speak_state(self, state):
+        """根据识别结果播放对应 MP3 语音，相同状态不重复播报。"""
+        if not self.voice_enabled:
+            return
+
+        letter = state.get('letter')
+        tag = state.get('tag')
+        if not letter or not tag:
+            return
+
+        current = (letter, tag)
+        if self.last_voice_state == current:
+            return
+        self.last_voice_state = current
+
+        filename = get_voice_filename(letter, tag)
+        if filename is None:
+            self.get_logger().warn(f'无对应音频：letter={letter}, tag={tag}')
+            return
+
+        filepath = os.path.join(self.mp3_dir, filename)
+        if not os.path.isfile(filepath):
+            self.get_logger().warn(f'音频文件不存在：{filepath}')
+            return
+
+        self.get_logger().info(f'语音播报：{filename}')
+
+        def _play():
+            try:
+                play_mp3(filepath)
+            except Exception as e:
+                self.get_logger().error(f'语音播报失败：{e}')
+
+        self.voice_thread = threading.Thread(target=_play, daemon=True)
+        self.voice_thread.start()
 
     def destroy_node(self):
         """释放资源。"""
