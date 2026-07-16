@@ -512,7 +512,7 @@ class AsyncGaugeProcessor:
 def main():
     print("启动多线程仪表盘识别...")
     processor = AsyncGaugeProcessor(
-        camera_id=6,
+        camera_id=4,
         width=640,
         height=480,
         process_interval=0.3   # 每 300ms 识别一次，画面保持流畅
