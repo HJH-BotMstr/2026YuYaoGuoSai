@@ -9,6 +9,8 @@ import logging
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from typing import Optional
+
 from RobotArm.scservo_sdk import PortHandler, sms_sts, COMM_SUCCESS
 from RobotArm.three_Inverse_kinematics import Arm
 
@@ -29,22 +31,22 @@ SCS_1_STATUS_VALUE    = 1847   #2047
 SCS_2_INIT_VALUE      = 2047
 SCS_2_STATUS_VALUE    = 2047
 
-SCS_3_INIT_VALUE      = 1450  #3080
+SCS_3_INIT_VALUE      = 2750  #3080
 SCS_3_STATUS_VALUE    = 2800
-SCS_3_MOVE_VALUE      = 1600   #1070
+SCS_3_MOVE_VALUE      = 2800   #1070
 SCS_3_TRANSPORT1_VALUE= 2000   #3060
 SCS_3_TRANSPORT2_VALUE= 2940
 
-SCS_4_INIT_VALUE      = 650
+SCS_4_INIT_VALUE      = 1000
 SCS_4_STATUS_VALUE    = 1100
-SCS_4_MOVE_VALUE      = 650    #540
-SCS_4_TRANSPORT1_VALUE= 1024
+SCS_4_MOVE_VALUE      = 1300    #540
+SCS_4_TRANSPORT1_VALUE= 1324
 SCS_4_TRANSPORT2_VALUE= 1430
 
-SCS_5_INIT_VALUE      = 1847
+SCS_5_INIT_VALUE      = 2747
 SCS_5_STATUS_VALUE    = 3030
-SCS_5_MOVE_VALUE      = 2047   #1540
-SCS_5_TRANSPORT1_VALUE= 2200
+SCS_5_MOVE_VALUE      = 2547   #1540
+SCS_5_TRANSPORT1_VALUE= 2500
 SCS_5_TRANSPORT2_VALUE= 2540
 
 SCS_6_INIT_VALUE      = 2047
@@ -71,7 +73,7 @@ _DEFAULT_CFG = {
 }
 class ArmController:
 
-    def __init__(self, device: str = "/dev/ttyUSB0", cfg: dict | None = None):
+    def __init__(self, device: str = "/dev/ttyUSB0", cfg: Optional[dict] = None):
         self._cfg = {**_DEFAULT_CFG, **(cfg or {})}
         self._speed = int(self._cfg["moving_speed"])
         self._acc   = int(self._cfg["moving_acc"])
@@ -143,10 +145,11 @@ class ArmController:
             ph.WritePosEx(SCS_ID_3, SCS_3_TRANSPORT2_VALUE, spd, acc)
             ph.WritePosEx(SCS_ID_6, SCS_6_INIT_VALUE,       spd, acc)
 
-    def grap(self, dis: float, height: float = 30) -> bool:
+    def grap(self, dis: float, height: float = 30, keep_gripper: bool = False) -> bool:
         """
         逆运动学求解并下发关节目标。
         dis: 水平距离(mm)，height: 末端高度(mm)。
+        keep_gripper=True 时不改变夹爪位置。
         解超出安全范围时返回 False 并不执行。
         """
         angle_3, angle_4, angle_5 = Arm(dis, height)
@@ -161,7 +164,8 @@ class ArmController:
 
         ph = self.packetHandler
         spd, acc = self._speed, self._acc
-        ph.WritePosEx(SCS_ID_1, SCS_1_STATUS_VALUE, spd, acc)
+        if not keep_gripper:
+            ph.WritePosEx(SCS_ID_1, SCS_1_STATUS_VALUE, spd, acc)
         ph.WritePosEx(SCS_ID_2, SCS_2_STATUS_VALUE, spd, acc)
         ph.WritePosEx(SCS_ID_4, angle_4,            spd, acc)
         time.sleep(1)
@@ -206,7 +210,7 @@ class ArmController:
             result[sid] = pos if comm == COMM_SUCCESS else -1
         return result
 
-    def wait_for_position(self, targets: dict, timeout: float | None = None) -> bool:
+    def wait_for_position(self, targets: dict, timeout: Optional[float] = None) -> bool:
         """
         阻塞直到所有 targets 舵机到达目标位置（在阈值内）或超时。
         targets: {servo_id: target_position}

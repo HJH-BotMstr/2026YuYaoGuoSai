@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+from typing import Optional
 
 
 class BlockDetection:
@@ -31,7 +32,7 @@ class BlockDetection:
                                    [0, 0, 1]], dtype=np.float64)
 
     # ------------------------------------------------------------------ #
-    def detect(self, frame) -> dict | None:
+    def detect(self, frame) -> Optional[dict]:
         """
         在 frame 中检测最大红色/绿色长条。
         返回 dict 或 None（未检测到）。
@@ -160,7 +161,7 @@ class BlockDetection:
         results.sort(key=lambda r: r["distance_mm"])
         return results
 
-    def visualize(self, frame, result: dict | None):
+    def visualize(self, frame, result: Optional[dict]):
         """在 frame 上绘制检测结果，用于调试。"""
         if result is None:
             return frame

@@ -10,6 +10,7 @@ import logging
 import time
 import yaml
 import cv2
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -46,9 +47,30 @@ def _pc_wait(prompt: str) -> None:
 
 # ─────────────────────────── phase_0 ─────────────────────────────────────── #
 
-def phase_0_init(cfg: dict, mode: str) -> dict | None:
+def _open_camera(device: str, retries: int = 3, delay: float = 1.0):
+    """尝试打开摄像头，失败时重试；返回 VideoCapture 或 None。"""
+    for attempt in range(1, retries + 1):
+        logger.info("尝试打开摄像头: %s (第 %d/%d 次)", device, attempt, retries)
+        cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
+        if cap.isOpened():
+            ret, frame = cap.read()
+            if ret and frame is not None:
+                logger.info("摄像头打开成功: %s, 帧大小=%s", device, frame.shape)
+                return cap
+            else:
+                logger.warning("摄像头能打开但无法读帧，尝试重新打开")
+                cap.release()
+        else:
+            logger.warning("摄像头打开失败: %s", device)
+        if attempt < retries:
+            time.sleep(delay)
+    return None
+
+
+def phase_0_init(cfg: dict, mode: str) -> Optional[dict]:
     """初始化所有模块，返回共享上下文 ctx；失败返回 None。"""
     logger.info("=== phase_0: 初始化 (mode=%s) ===", mode)
+    arm = None
     try:
         arm = ArmController(
             device=cfg["hardware"]["arm_serial_port"],
@@ -66,10 +88,11 @@ def phase_0_init(cfg: dict, mode: str) -> dict | None:
         )
 
         cam_device = cfg["hardware"]["arm_cam_device"]
-        arm_cam = cv2.VideoCapture(cam_device, cv2.CAP_V4L2)
-        if not arm_cam.isOpened():
+        arm_cam = _open_camera(cam_device)
+        if arm_cam is None:
             logger.error("机械臂摄像头打开失败: %s", cam_device)
-            arm.finalize()
+            if arm is not None:
+                arm.finalize()
             return None
 
         logger.info("初始化完成。摄像头: %s  串口: %s",
@@ -87,6 +110,11 @@ def phase_0_init(cfg: dict, mode: str) -> dict | None:
         }
     except Exception as e:
         logger.exception("初始化失败: %s", e)
+        if arm is not None:
+            try:
+                arm.finalize()
+            except Exception:
+                pass
         return None
 
 # ─────────────────────────── phase_1 ─────────────────────────────────────── #
@@ -110,7 +138,7 @@ def phase_1_standby(ctx: dict) -> bool:
 
 # ─────────────────────────── phase_2 ─────────────────────────────────────── #
 
-def phase_2_detect(ctx: dict) -> dict | None:
+def phase_2_detect(ctx: dict) -> Optional[dict]:
     """
     多帧检测，TargetTracker 滑动均值稳定后返回稳定目标读数。
     返回 dict（与 detect() 结构相同）或 None（超时）。
@@ -289,7 +317,7 @@ def phase_6_place(ctx: dict) -> bool:
 
     try:
         from utils.RobotArm.three_Inverse_kinematics import Arm as IKArm
-        ok = arm.grap(dis, height)
+        ok = arm.grap(dis, height, keep_gripper=True)
         if not ok:
             logger.error("放置 IK 解超出范围")
             return False
@@ -313,9 +341,18 @@ def phase_7_home(ctx: dict) -> None:
     except Exception as e:
         logger.warning("归位时异常: %s", e)
     finally:
-        ctx["arm_cam"].release()
-        cv2.destroyAllWindows()
-        ctx["arm"].finalize()
+        try:
+            ctx["arm_cam"].release()
+        except Exception as e:
+            logger.warning("释放摄像头时异常: %s", e)
+        try:
+            cv2.destroyAllWindows()
+        except Exception:
+            pass
+        try:
+            ctx["arm"].finalize()
+        except Exception as e:
+            logger.warning("释放机械臂时异常: %s", e)
         logger.info("资源已释放")
 
 # ─────────────────────────── 主流程 ──────────────────────────────────────── #

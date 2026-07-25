@@ -8,7 +8,9 @@ runtime:
 hardware:
   arm_serial_port: "/dev/ttyUSB0"     # [TODO: 现场标定] Lite3 感知主机上确认: ls /dev/ttyUSB*
   arm_serial_baud: 500000             # 舵机波特率，一般不变
-  arm_cam_device: "/dev/video4"       #  机械臂摄像头
+  # 机械臂 RGB 摄像头：独立 USB 摄像头（v4l2-ctl --list-devices 里显示为 "USB Camera"）
+  # 注意：/dev/video4 是 Intel RealSense，属于机械狗头/深度相机，不是机械臂摄像头
+  arm_cam_device: "/dev/video0"
 
 arm:
   moving_speed: 500                  # 舵机运动速度 (0~4095)
@@ -43,9 +45,9 @@ detection:
   block_real_width_mm: 40.0           # 长条实际宽度 40mm（题目给定，不变）
 
 grasp:
-  h_object: 25.0                       # [TODO: 现场标定] 末端抓取高度（mm，基座坐标系）
-  distance_offset_mm: 180.0            # [TODO: 现场标定] 视觉测距固定补偿（mm），加到 Y_cam 上
-  approach_clearance_mm: 25.0          # 步骤1与物块的水平安全余量（mm）
+  h_object: 200.0                       # [TODO: 现场标定] 末端抓取高度（mm，基座坐标系）
+  distance_offset_mm: 100.0            # [TODO: 现场标定] 视觉测距固定补偿（mm），加到 Y_cam 上
+  approach_clearance_mm: 30.0          # 步骤1与物块的水平安全余量（mm）
   align_offset_threshold_mm: 10.0      # X_cam 偏移超过此值才触发横向对齐（mm）
   lost_frames_max: 10
   distance_avg_window: 20
@@ -56,10 +58,10 @@ placement:
   # 各放置区对应机械臂末端参数 [TODO: 现场标定]
   # dis: 水平距离(mm)，height: 末端高度(mm)
   zones:
-    A: {dis: 220, height: 30}
-    B: {dis: 220, height: 30}
-    C: {dis: 220, height: 30}
-    D: {dis: 220, height: 30}
+    A: {dis: 220, height: 180}
+    B: {dis: 220, height: 180}
+    C: {dis: 220, height: 180}
+    D: {dis: 220, height: 180}
   lower_timeout: 3.0                  # 放置下降等待（秒）
 
 inspection:

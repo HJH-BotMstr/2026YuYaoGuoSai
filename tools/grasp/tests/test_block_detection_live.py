@@ -4,8 +4,9 @@
 用途：不需要机械臂，只用摄像头，实时显示检测结果，用于现场 HSV 标定验证。
 
 运行方法：
-  python3 tests/test_block_detection.py
-  python3 tests/test_block_detection.py --config config.yaml --device /dev/video2
+  python3 tests/test_block_detection_live.py
+  python3 tests/test_block_detection_live.py --config config.yaml
+  python3 tests/test_block_detection_live.py --device /dev/video6
 
 操作：
   q 退出
@@ -24,12 +25,36 @@ from utils.BlockDetection import BlockDetection
 DEFAULT_CONFIG = os.path.join(os.path.dirname(__file__), '..', 'config.yaml')
 
 
+def _list_cameras():
+    """列出 /dev/video* 设备，帮助区分机械臂摄像头和机械狗摄像头。"""
+    import glob
+    import subprocess
+    print("\n可用视频设备：")
+    for dev in sorted(glob.glob("/dev/video*")):
+        try:
+            out = subprocess.check_output(
+                ["v4l2-ctl", "-d", dev, "--all"],
+                stderr=subprocess.DEVNULL, text=True, timeout=2
+            )
+            card = next((l.strip() for l in out.splitlines() if "Card type" in l), "未知")
+            print(f"  {dev:<12} -> {card}")
+        except Exception:
+            print(f"  {dev:<12} -> (无法读取)")
+    print()
+
+
 def main():
     parser = argparse.ArgumentParser(description="色块识别实时调试")
     parser.add_argument("--config", default=DEFAULT_CONFIG)
     parser.add_argument("--device", default=None,
                         help="摄像头设备路径（覆盖 config.yaml 的值）")
+    parser.add_argument("--list", action="store_true",
+                        help="列出所有视频设备后退出")
     args = parser.parse_args()
+
+    if args.list:
+        _list_cameras()
+        sys.exit(0)
 
     with open(args.config, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
@@ -37,7 +62,8 @@ def main():
     device = args.device or cfg["hardware"]["arm_cam_device"]
     detector = BlockDetection(cfg["detection"])
 
-    print(f"打开摄像头: {device}")
+    print(f"打开摄像头: {device}  (config.yaml 中 hardware.arm_cam_device)")
+    print("提示：若设备不对，可用 --list 查看所有摄像头，或用 --device 临时指定")
     cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
     if not cap.isOpened():
         print(f"错误：无法打开摄像头 {device}")

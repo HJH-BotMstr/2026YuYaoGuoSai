@@ -11,6 +11,7 @@ TargetTracker — 多目标选择与锁定
 """
 import math
 from collections import deque
+from typing import Optional
 
 
 class TargetTracker:
@@ -91,7 +92,7 @@ class TargetTracker:
     def is_locked(self) -> bool:
         return self._locked
 
-    def get_stable_target(self) -> dict | None:
+    def get_stable_target(self) -> Optional[dict]:
         """
         返回滑动均值稳定后的目标读数。
         窗口未满时返回 None（表示读数尚不稳定）。
