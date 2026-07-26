@@ -1,0 +1,36 @@
+apriltag_place1:
+  ros__parameters:
+    # ── 外部触发接口 ──────────────────────────────────────────────────────────
+    trigger_topic: "/apriltag_place1/start"
+
+    # ── 摄像头（头部 Intel RealSense D435i RGB 流）────────────────────────────
+    # 注意：/dev/video4 是 RealSense，/dev/video0 是机械臂 USB 摄像头
+    # 以 v4l2-ctl --list-devices 现场确认
+    camera_device: "/dev/video4"
+    image_width: 640
+    image_height: 480
+    fps: 30
+
+    # ── 内参 [TODO: 用 /dev/video4 重新标定，当前借用机械臂内参仅供调试] ────
+    camera_matrix: [388.1454, 0.0, 329.4121, 0.0, 387.7497, 223.481, 0.0, 0.0, 1.0]
+    dist_coeffs: [-0.1571, -0.218, -0.0024, -0.0011, 0.2089]
+
+    # ── Tag 参数 [TODO: tag_size_m 须用尺子量黑色编码区域边长，不含白边] ────
+    tag_family: "tag25h9"
+    target_tag_id: 0
+    tag_size_m: 0.083
+
+    # ── 目标位置 ──────────────────────────────────────────────────────────────
+    target_distance_m: 0.20
+
+    # ── 对准阈值 ──────────────────────────────────────────────────────────────
+    yaw_align_threshold_deg: 3.0
+    lateral_threshold_m: 0.03
+    distance_threshold_m: 0.02
+
+    # ── 流程控制 ──────────────────────────────────────────────────────────────
+    max_rounds: 5
+    stable_frames: 10
+    detect_timeout_s: 10.0
+    cmd_vel_zero_timeout_s: 0.5
+    move_timeout_s: 10.0

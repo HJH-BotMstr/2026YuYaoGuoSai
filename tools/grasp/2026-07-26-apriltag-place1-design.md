@@ -486,3 +486,225 @@ python3 main.py --mode robot
 - `pupil-apriltags` 与 `apriltag` Python 包 API 略有差异，实现时以实际安装的包为准。
 - 如果现场 RealSense RGB 流不可用，可降级到机械臂 USB 摄像头 `/dev/video0`，但此时需要重新标定内参，且摄像头高度、视角不同，需重新调参。
 - `/grasp/start` 的信号类型需要与 `RobotSignalInterface` 协商一致，建议用 `std_msgs/Bool`。
+
+---
+
+## 14. 上机必做检查清单
+
+上机前按顺序逐项确认，**跳过任何一项都会导致运行失败或定位偏差**。
+
+### 14.1 依赖安装
+
+```bash
+# 确认 pupil-apriltags 已安装
+python3 -c "from pupil_apriltags import Detector; print('OK')"
+
+# 若报错，执行安装
+pip3 install pupil-apriltags
+```
+
+### 14.2 确认摄像头设备号
+
+RealSense 设备号在不同主机或重插后可能变化，**不要硬信 `/dev/video4`**。
+
+```bash
+v4l2-ctl --list-devices
+```
+
+找到 `Intel RealSense` 对应的 `/dev/videoX`，将该值填入：
+
+- `lite3_ws/src/apriltag_place1/config/apriltag_place1.yaml` → `camera_device`
+
+验证能读到画面：
+
+```bash
+python3 -c "
+import cv2
+cap = cv2.VideoCapture('/dev/video4', cv2.CAP_V4L2)
+ret, f = cap.read()
+print('帧大小:', f.shape if ret else '读帧失败')
+cap.release()
+"
+```
+
+### 14.3 标定头部摄像头内参
+
+config 中的默认内参来自机械臂摄像头，**必须替换为 `/dev/videoX`（RealSense RGB）的内参**，否则位姿估计误差可能达到数十厘米。
+
+```bash
+# 用 OpenCV 棋盘格或现有工具标定
+# 参考: tools_box/camera_params/camera_params.py
+python3 /home/ysc/2026YuYaoGuoSai/tools_box/camera_params/camera_params.py \
+    --device /dev/video4 --output camera_params_video4.yaml
+```
+
+将输出的 `camera_matrix`（3×3 展开为 9 个数）和 `dist_coeffs`（5 个数）写入配置文件。
+
+### 14.4 量取 Tag 实际尺寸
+
+`tag_size_m` 必须是打印后**黑色编码区域的实际边长（米）**，不含白色外边框。
+
+- 打印后用直尺量黑色方块区域（不是纸张边缘）。
+- 典型值：A4 纸打印约 8～9 cm，即 `tag_size_m: 0.083`。
+- 量完后更新配置文件，误差 ±2 mm 以内可接受。
+
+### 14.5 编译并 source
+
+```bash
+cd /home/ysc/2026YuYaoGuoSai/lite3_ws
+source /opt/ros/foxy/setup.bash
+colcon build --packages-select apriltag_place1
+source install/setup.bash
+```
+
+### 14.6 静态检测验证
+
+在正式运行前，先静态验证检测效果（**不启动 pose_control，不发触发信号**）。
+
+```bash
+python3 - <<'EOF'
+import cv2
+from pupil_apriltags import Detector
+import numpy as np
+
+DEVICE   = "/dev/video4"
+FAMILY   = "tag25h9"
+TAG_ID   = 0
+TAG_SIZE = 0.083          # 修改为实测值
+# 修改为标定后的内参
+FX, FY, CX, CY = 388.1454, 387.7497, 329.4121, 223.481
+
+cap = cv2.VideoCapture(DEVICE, cv2.CAP_V4L2)
+detector = Detector(families=FAMILY, nthreads=4)
+print("按 q 退出，正在检测...")
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+    grey = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    tags = detector.detect(grey, estimate_tag_pose=True,
+                           camera_params=[FX, FY, CX, CY], tag_size=TAG_SIZE)
+    for t in tags:
+        if t.tag_id == TAG_ID:
+            tx, ty, tz = t.pose_t.flatten()
+            cv2.putText(frame, f"id={t.tag_id}  tx={tx:.3f}  tz={tz:.3f}",
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            print(f"tx={tx:.3f}m  ty={ty:.3f}m  tz={tz:.3f}m")
+    cv2.imshow("apriltag", frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
+EOF
+```
+
+预期结果：摄像头正对 Tag 时 `tx ≈ 0`，`tz ≈ 实际距离`，误差在 ±3 cm 以内。如误差偏大，先重新检查内参和 `tag_size_m`。
+
+### 14.7 调参建议顺序
+
+首次上机建议按以下顺序调参，每步确认后再进行下一步：
+
+1. 先确认静态检测正常（14.6）
+2. 固定狗，只测 phase_2 yaw_align（手动发触发信号，观察旋转方向是否正确）
+3. 固定狗，只测 phase_3 lateral_align（观察横移方向是否正确）
+4. 完整跑通一次，观察 phase_5 final_check 是否稳定通过
+5. 调整 `stable_frames`、各阈值到现场合适的值
+
+---
+
+## 15. 使用指南
+
+### 15.1 日常启动（三终端）
+
+推荐开三个终端，各自独立启动，便于单独重启某个进程。
+
+**终端 1 — pose_control**
+
+```bash
+cd /home/ysc/2026YuYaoGuoSai/lite3_ws
+source /opt/ros/foxy/setup.bash && source install/setup.bash
+ros2 run pose_control pose_control
+```
+
+**终端 2 — apriltag_place1_node**
+
+```bash
+cd /home/ysc/2026YuYaoGuoSai/lite3_ws
+source /opt/ros/foxy/setup.bash && source install/setup.bash
+ros2 run apriltag_place1 apriltag_place1_node \
+    --ros-args --params-file src/apriltag_place1/config/apriltag_place1.yaml
+```
+
+或者用 launch 文件一键启动（自动加载配置）：
+
+```bash
+ros2 launch apriltag_place1 apriltag_place1.launch.py
+```
+
+**终端 3 — grasp 主流程**
+
+```bash
+cd /home/ysc/2026YuYaoGuoSai/tools/grasp
+python3 main.py --mode robot
+```
+
+grasp 启动后会阻塞在 `phase_1_standby`，等待 `/grasp/start` 信号到来。
+
+### 15.2 手动触发对齐
+
+把机器狗大致转到朝墙方向（Tag 应在摄像头视野内或接近视野），然后：
+
+```bash
+# 启动对齐
+ros2 topic pub /apriltag_place1/start std_msgs/Bool "data: true" --once
+
+# 取消 / 复位（节点停止运动，回到等待状态）
+ros2 topic pub /apriltag_place1/start std_msgs/Bool "data: false" --once
+```
+
+### 15.3 监控运行状态
+
+```bash
+# 查看节点是否在线
+ros2 node list | grep apriltag
+
+# 查看当前 /move 指令
+ros2 topic echo /move
+
+# 查看机器人速度
+ros2 topic echo /cmd_vel
+
+# 查看 /grasp/start 是否已发出
+ros2 topic echo /grasp/start
+```
+
+### 15.4 常见问题排查
+
+| 现象 | 可能原因 | 排查方法 |
+|---|---|---|
+| 节点启动后立即崩溃 | `pupil-apriltags` 未安装 | `pip3 install pupil-apriltags` |
+| 摄像头打开失败 | 设备号错误或 RealSense 未初始化 | `v4l2-ctl --list-devices`，确认设备号 |
+| 发触发信号后无反应 | 节点未订阅到 topic | `ros2 topic info /apriltag_place1/start` 确认订阅方 |
+| `tz` 与实际距离偏差大 | 内参未重新标定 / `tag_size_m` 不准 | 重新标定，重新量 Tag 尺寸 |
+| 旋转方向反了 | 坐标系约定与实际不符 | 修改节点 `_do_yaw_align` 中的符号，或重新确认相机安装朝向 |
+| phase_1 超时退出 | Tag 不在视野内 / 检测失败 | 静态检测脚本（14.6）验证；调大 `detect_timeout_s` |
+| 对齐震荡不收敛 | 阈值过紧或 `max_rounds` 不够 | 适当放宽 `yaw_align_threshold_deg`、`lateral_threshold_m` |
+| grasp 未收到信号 | `/grasp/start` topic 类型不一致 | `ros2 topic info /grasp/start` 确认类型为 `std_msgs/msg/Bool` |
+
+### 15.5 修改参数不重编译
+
+只改 yaml 参数（阈值、距离、tag_size 等）时，**不需要重新 colcon build**，直接重启节点即可生效：
+
+```bash
+# 用 params-file 方式启动时，每次启动都重新读取 yaml
+ros2 run apriltag_place1 apriltag_place1_node \
+    --ros-args --params-file src/apriltag_place1/config/apriltag_place1.yaml
+```
+
+若修改了 `.py` 源码，则需要重新编译：
+
+```bash
+colcon build --packages-select apriltag_place1 && source install/setup.bash
+```
