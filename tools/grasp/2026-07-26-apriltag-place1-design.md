@@ -567,14 +567,14 @@ import cv2
 from pupil_apriltags import Detector
 import numpy as np
 
-DEVICE   = "/dev/video4"
+DEVICE   = "/dev/video6"
 FAMILY   = "tag25h9"
 TAG_ID   = 0
 TAG_SIZE = 0.083          # 修改为实测值
 # 修改为标定后的内参
 FX, FY, CX, CY = 388.1454, 387.7497, 329.4121, 223.481
 
-cap = cv2.VideoCapture(DEVICE, cv2.CAP_V4L2)
+cap = cv2.VideoCapture(DEVICE)
 detector = Detector(families=FAMILY, nthreads=4)
 print("按 q 退出，正在检测...")
 
@@ -708,3 +708,122 @@ ros2 run apriltag_place1 apriltag_place1_node \
 ```bash
 colcon build --packages-select apriltag_place1 && source install/setup.bash
 ```
+
+
+source /opt/ros/foxy/setup.bash
+source /home/ysc/lite_cog_ros2/transfer/install/setup.bash
+
+# 1) 回零
+ros2 topic pub /simple_cmd transfer_interfaces/msg/MotionSimpleCMD "{cmd_code: 553716741, size: 0, type: 0}" --once
+
+# 2) 起立
+ros2 topic pub /simple_cmd transfer_interfaces/msg/MotionSimpleCMD "{cmd_code: 553714178, size: 0, type: 0}" --once
+
+# 3) 切换到 locomotion（运动）模式
+ros2 topic pub /simple_cmd transfer_interfaces/msg/MotionSimpleCMD "{cmd_code: 553716998, size: 0, type: 0}" --once
+
+# 4) 切换到 autonomous（自动）模式
+ros2 topic pub /simple_cmd transfer_interfaces/msg/MotionSimpleCMD "{cmd_code: 553716739, size: 0, type: 0}" --once
+
+# 5) 设置步态为 slow
+ros2 topic pub /simple_cmd transfer_interfaces/msg/MotionSimpleCMD "{cmd_code: 553714432, size: 0, type: 0}" --once
+
+
+cd /home/ysc/2026YuYaoGuoSai/lite3_ws
+colcon build --packages-select apriltag_place1
+source install/setup.bash
+
+ysc@lite:~/2026YuYaoGuoSai/lite3_ws$ ros2 run apriltag_place1 apriltag_place1_node     --ros-args --params-file src/apriltag_place1/config/apriltag_place1.yaml
+1785137563.092912 [0] apriltag_p: using network interface eth0 (udp/192.168.1.103) selected arbitrarily from: eth0, wlan0, docker0
+[INFO] [1785137564.210531947] [apriltag_place1_node]: pupil_apriltags Detector 初始化成功，family=tag25h9
+[INFO] [1785137564.215907905] [apriltag_place1_node]: 打开摄像头: /dev/video6
+[ WARN:0@2.351] global cap.cpp:204 open VIDEOIO(V4L2): backend is generally available but can't be used to capture by name
+[ERROR] [1785137564.225105872] [apriltag_place1_node]: 摄像头打开失败: /dev/video6
+[INFO] [1785137564.339299006] [apriltag_place1_node]: apriltag_place1_node 已启动，等待触发信号: /apriltag_place1/start
+
+
+ysc@lite:~/2026YuYaoGuoSai/tools/grasp$ python3 main.py --mode robot
+2026-07-28 09:51:43,194 [INFO] main: 配置加载完成: /home/ysc/2026YuYaoGuoSai/tools/grasp/config.yaml  mode=robot
+2026-07-28 09:51:43,198 [INFO] main: === phase_0: 初始化 (mode=robot) ===
+2026-07-28 09:51:43,231 [INFO] utils.ArmController: 串口已打开: /dev/ttyUSB0
+2026-07-28 09:51:43,246 [INFO] utils.ArmController: 波特率设置成功
+2026-07-28 09:51:43,247 [INFO] main: 尝试打开摄像头: /dev/video0 (第 1/3 次)
+2026-07-28 09:51:43,740 [INFO] main: 摄像头打开成功: /dev/video0, 帧大小=(480, 640, 3)
+2026-07-28 09:51:43,754 [INFO] main: 初始化完成。摄像头: /dev/video0  串口: /dev/ttyUSB0
+2026-07-28 09:51:43,755 [INFO] main: === phase_1: 待命 ===
+2026-07-28 09:51:45,879 [INFO] main: 机械臂就绪，等待机器狗停稳...
+1785203507.175471 [0]    python3: using network interface eth0 (udp/192.168.1.103) selected arbitrarily from: eth0, wlan0, docker0
+2026-07-28 09:51:48,222 [INFO] utils.RobotSignalInterface: 等待 /grasp/start 信号 (topic=/grasp/start, 超时=300.0s)...
+
+ysc@lite:~/2026YuYaoGuoSai/lite3_ws$ ros2 run apriltag_place1 apriltag_place1_node     --ros-args --params-file src/apriltag_place1/config/apriltag_place1.yaml
+1785230294.010218 [0] apriltag_p: using network interface eth0 (udp/192.168.1.103) selected arbitrarily from: eth0, wlan0, docker0
+[INFO] [1785230295.380279406] [apriltag_place1_node]: pupil_apriltags Detector 初始化成功，family=tag25h9
+[INFO] [1785230295.389439758] [apriltag_place1_node]: 打开摄像头: /dev/video6
+[INFO] [1785230296.004944719] [apriltag_place1_node]: 摄像头已就绪: /dev/video6  帧大小=(480, 640, 3)
+[INFO] [1785230296.191837240] [apriltag_place1_node]: apriltag_place1_node 已启动，等待触发信号: /apriltag_place1/start
+[INFO] [1785230324.238343379] [apriltag_place1_node]: 收到触发信号，进入 wait_detect
+[INFO] [1785230324.604292125] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230332.136943479] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230332.272062503] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230332.407359386] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230332.754966040] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230332.944903453] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230333.074131600] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230333.289960959] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230333.553812893] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230333.781026113] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230333.830388222] [apriltag_place1_node]: Tag 稳定锁定: tx=0.028  tz=0.319
+[INFO] [1785230333.898156824] [apriltag_place1_node]: yaw_align 轮次 1: alpha=5.09°，发送旋转指令 theta=-5.00°
+[INFO] [1785230333.934368813] [apriltag_place1_node]: 发布 reset_origin
+[INFO] [1785230334.101863465] [apriltag_place1_node]: 发布 /move  x=0.000  y=0.000  theta=-5.0°
+[INFO] [1785230335.504240844] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230335.553132131] [apriltag_place1_node]: yaw_align 完成: alpha=-2.75°
+[INFO] [1785230335.598904314] [apriltag_place1_node]: lateral_align 完成: tx=-0.016m
+[INFO] [1785230335.689883906] [apriltag_place1_node]: approach step1: tz=0.325m  interim=0.250m  delta=0.075m
+[INFO] [1785230335.724544903] [apriltag_place1_node]: 发布 /move  x=0.075  y=0.000  theta=0.0°
+[INFO] [1785230337.915429544] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230337.956520911] [apriltag_place1_node]: approach 轮次 1: tz=0.285m  delta=0.085m
+[INFO] [1785230337.968592331] [apriltag_place1_node]: 发布 /move  x=0.085  y=0.000  theta=0.0°
+[INFO] [1785230340.235672385] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230340.370554793] [apriltag_place1_node]: approach 轮次 2: tz=0.237m  delta=0.037m
+[INFO] [1785230340.405461231] [apriltag_place1_node]: 发布 /move  x=0.037  y=0.000  theta=0.0°
+[INFO] [1785230342.429382764] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230342.481662724] [apriltag_place1_node]: approach 轮次 3: tz=0.230m  delta=0.030m
+[INFO] [1785230342.504546319] [apriltag_place1_node]: 发布 /move  x=0.030  y=0.000  theta=0.0°
+[INFO] [1785230343.862601617] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230343.911999339] [apriltag_place1_node]: approach 完成: tz=0.196m
+[INFO] [1785230344.135700383] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230344.239588551] [apriltag_place1_node]: yaw_align 轮次 1: alpha=-17.37°，发送旋转指令 theta=5.00°
+[INFO] [1785230344.265518193] [apriltag_place1_node]: 发布 reset_origin
+[INFO] [1785230344.423843815] [apriltag_place1_node]: 发布 /move  x=0.000  y=0.000  theta=5.0°
+[INFO] [1785230346.402396778] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230346.437867765] [apriltag_place1_node]: yaw_align 完成: alpha=-1.56°
+[INFO] [1785230346.470385858] [apriltag_place1_node]: lateral_align 完成: tx=-0.006m
+[INFO] [1785230346.509247760] [apriltag_place1_node]: approach 完成: tz=0.215m
+[INFO] [1785230346.735738910] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230346.898151996] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230347.077380934] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230347.275399823] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230347.336004699] [apriltag_place1_node]: yaw_align 完成: alpha=0.28°
+[INFO] [1785230347.449341539] [apriltag_place1_node]: lateral_align 完成: tx=0.001m
+[INFO] [1785230347.520261592] [apriltag_place1_node]: approach 轮次 1: tz=0.221m  delta=0.021m
+[INFO] [1785230347.560703126] [apriltag_place1_node]: 发布 /move  x=0.021  y=0.000  theta=0.0°
+[INFO] [1785230348.723938541] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230348.760849895] [apriltag_place1_node]: approach 完成: tz=0.211m
+[INFO] [1785230348.906643257] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230349.117208322] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230349.339937478] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230349.511393982] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230349.684568424] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230349.858923581] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230350.063017475] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230350.229619592] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230350.433139911] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230350.581634100] [apriltag_place1_node]: 检测到 1 个 Tag，IDs=[0]
+[INFO] [1785230350.611115489] [apriltag_place1_node]: final_check 通过！tx=0.002m  tz=0.219m  alpha=0.54°，准备额外前进 0.150m
+[INFO] [1785230350.645009915] [apriltag_place1_node]: final_forward: 重置原点并前进 0.150m
+[INFO] [1785230350.680723880] [apriltag_place1_node]: 发布 reset_origin
+[INFO] [1785230350.835785208] [apriltag_place1_node]: 发布 /move  x=0.150  y=0.000  theta=0.0°
+[INFO] [1785230352.190258652] [apriltag_place1_node]: final_forward 完成，额外前进 0.150m，发布抓取信号
+[INFO] [1785230352.206985351] [apriltag_place1_node]: 发布 /grasp/start = True
+

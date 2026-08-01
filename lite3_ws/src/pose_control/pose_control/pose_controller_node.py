@@ -86,9 +86,11 @@ class PoseController(Node):
 
         # 可调参数
         # 位置 / 横向 PI 增益：输出速度 = kp × 误差 + ki × 积分（单位：m/s）。
-        self.declare_parameter("kp_dist", 0.5)          # 前后位置 P 增益
+        # 默认值针对 Lite3 四足调整：低速时机身容易原地踏步，需要较高增益
+        # 才能产生可见平移；同时配合下方的 min_vel_x/min_vel_y 保证起步速度。
+        self.declare_parameter("kp_dist", 2.0)          # 前后位置 P 增益
         self.declare_parameter("ki_dist", 0.1)          # 前后位置 I 增益
-        self.declare_parameter("kp_lateral", 0.5)       # 横向修正 P 增益
+        self.declare_parameter("kp_lateral", 2.0)       # 横向修正 P 增益
         self.declare_parameter("ki_lateral", 0.1)       # 横向修正 I 增益
 
         # 航向 PID 增益。注意：官方 ROS 约定 angular.z > 0 为逆时针。
@@ -101,9 +103,15 @@ class PoseController(Node):
         self.declare_parameter("max_vel_y", 0.6)        # 最大左右速度（m/s）
         self.declare_parameter("max_vel_yaw", 1.6)      # 最大旋转角速度（rad/s）
 
+        # 最小线速度：四足机器人在低速时容易“原地踏步”，低于该阈值时直接提到阈值。
+        self.declare_parameter("min_vel_x", 0.08)       # 最小前后速度（m/s）
+        self.declare_parameter("min_vel_y", 0.05)       # 最小左右速度（m/s）
+
         # 到位阈值。当相关误差都小于该阈值时，控制器认为已到达目标并停止。
-        self.declare_parameter("dist_threshold", 0.05)  # 位置到位阈值（m）
-        self.declare_parameter("yaw_threshold", 0.05)   # 航向到位阈值（rad）
+        # 阈值必须小于上层控制器（如 apriltag_place1）的容差，否则会在上层仍
+        # 认为有误差时提前停止，导致指令一直在发但机械狗不动。
+        self.declare_parameter("dist_threshold", 0.015) # 位置到位阈值（m）
+        self.declare_parameter("yaw_threshold", 0.025)  # 航向到位阈值（rad）
 
         # 航向死区：当 |航向误差| <= angle_threshold 时，积分器清零、输出为零。
         # deadband_hysteresis 放大退出阈值，避免在死区边界抖动。
@@ -143,6 +151,8 @@ class PoseController(Node):
         self.max_vel_x = self.get_parameter("max_vel_x").value
         self.max_vel_y = self.get_parameter("max_vel_y").value
         self.max_vel_yaw = self.get_parameter("max_vel_yaw").value
+        self.min_vel_x = self.get_parameter("min_vel_x").value
+        self.min_vel_y = self.get_parameter("min_vel_y").value
         self.dist_threshold = self.get_parameter("dist_threshold").value
         self.yaw_threshold = self.get_parameter("yaw_threshold").value
         self.angle_threshold = self.get_parameter("angle_threshold").value
@@ -577,7 +587,17 @@ class PoseController(Node):
         else:
             return 0.0, 0.0, 0.0
 
+        vx_body = self._apply_min_velocity(vx_body, self.min_vel_x)
+        vy_body = self._apply_min_velocity(vy_body, self.min_vel_y)
         return vx_body, vy_body, omega
+
+    def _apply_min_velocity(self, v: float, v_min: float) -> float:
+        """如果存在非零速度指令但低于最小阈值，提到最小阈值，帮助克服静摩擦。"""
+        if abs(v) < 1e-6 or v_min <= 0.0:
+            return v
+        if abs(v) < v_min:
+            return math.copysign(v_min, v)
+        return v
 
     def _apply_obstacle_clamp(self, vx_body, vy_body, omega):
         if self._state == "moving_x":
