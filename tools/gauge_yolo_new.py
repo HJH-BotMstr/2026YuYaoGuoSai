@@ -29,14 +29,27 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from ultralytics import YOLO
-from ultralytics.nn.modules.head import Detect, Pose
-
 try:
     import pytesseract
     PYTESSERACT_AVAILABLE = True
 except ImportError:
     PYTESSERACT_AVAILABLE = False
+
+
+# ultralytics（连带 torch）导入很慢，改为惰性加载：
+# 只做 A4 纸检测/OCR 的复用方（如 letter_place_align 节点）无需承担该开销。
+_YOLO_LAZY = {}
+
+
+def _load_ultralytics():
+    """首次调用时才 import ultralytics，返回 (YOLO, Detect, Pose)。"""
+    if not _YOLO_LAZY:
+        from ultralytics import YOLO
+        from ultralytics.nn.modules.head import Detect, Pose
+        _YOLO_LAZY['YOLO'] = YOLO
+        _YOLO_LAZY['Detect'] = Detect
+        _YOLO_LAZY['Pose'] = Pose
+    return _YOLO_LAZY['YOLO'], _YOLO_LAZY['Detect'], _YOLO_LAZY['Pose']
 
 
 # ===================== 路径与语音配置 =====================
@@ -261,6 +274,7 @@ def patch_pose_head(model):
     兼容用新版 ultralytics 训练的 pose 模型。
     新版 Pose head 不再保存 self.detect 属性，而 ultralytics 8.1.0 需要它。
     """
+    _, Detect, Pose = _load_ultralytics()
     try:
         head = model.model.model[-1]
     except Exception:
@@ -272,6 +286,7 @@ def patch_pose_head(model):
 
 class GaugeYOLORecognizer:
     def __init__(self, models_dir, use_engine=True, device=0, imgsz=640):
+        YOLO, _, _ = _load_ultralytics()
         self.models_dir = Path(models_dir)
         self.device = device
         self.imgsz = imgsz
@@ -609,6 +624,161 @@ class AsyncYOLOGaugeProcessor:
         if self.display_ok:
             cv2.destroyAllWindows()
         print()
+
+
+# ===================== A4 纸字母检测（letter_place_align 复用） =====================
+# 与 lite3_ws/src/grasp/letter_place_align/letter_place_align/letter_place_align_node.py 同源，
+# 设计依据 doc/2026-08-01-letter-place-align-design.md §3。
+# 修改本区函数时请同步检查该节点的使用方式。
+
+def _order_corners(pts):
+    """把 4x2 角点排序为 [tl, tr, br, bl]（顺时针，从左上开始）。"""
+    pts = np.asarray(pts, dtype=np.float64).reshape(4, 2)
+    s = pts.sum(axis=1)
+    d = np.diff(pts, axis=1).flatten()
+    tl = pts[np.argmin(s)]
+    br = pts[np.argmax(s)]
+    tr = pts[np.argmin(d)]
+    bl = pts[np.argmax(d)]
+    return np.array([tl, tr, br, bl], dtype=np.float64)
+
+
+def _ocr_letter_roi(roi):
+    """对单个 ROI 做字母 OCR（灰度→Otsu→2×放大→psm7→ABCD 白名单）。
+
+    与 recognize_letter / recognize_letter_box 同一条预处理流水线。
+    返回 'A'/'B'/'C'/'D' 或 None。
+    """
+    if not PYTESSERACT_AVAILABLE:
+        return None
+    if roi is None or roi.size == 0:
+        return None
+    try:
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        binary = cv2.resize(binary, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+        # psm 7（单行，与现有流水线一致）优先；A4 上只有单个大字母时
+        # psm 7 可能漏识，回退 psm 8（单词）兜底
+        for psm in ('7', '8'):
+            config = f'--psm {psm} -c tessedit_char_whitelist=ABCD'
+            text = pytesseract.image_to_string(binary, config=config).strip()
+            for c in text:
+                if c in 'ABCD':
+                    return c
+    except Exception as e:
+        print(f"[letter_ocr] A4 字母 OCR 失败: {e}")
+    return None
+
+
+def extract_paper_roi(frame, corners, shrink=0.15):
+    """按四边形角点取向内收缩 shrink 比例的纸面 ROI（去纸边，供 OCR 用）。"""
+    pts = _order_corners(corners)
+    center = pts.mean(axis=0)
+    inner = pts + (center - pts) * shrink
+    x1 = max(0, int(np.ceil(inner[:, 0].min())))
+    y1 = max(0, int(np.ceil(inner[:, 1].min())))
+    x2 = min(frame.shape[1], int(np.floor(inner[:, 0].max())))
+    y2 = min(frame.shape[0], int(np.floor(inner[:, 1].max())))
+    if y2 <= y1 or x2 <= x1:
+        return None
+    roi = frame[y1:y2, x1:x2]
+    return roi if roi.size > 0 else None
+
+
+def detect_letter_papers(frame, orientation='portrait',
+                         aspect_ratio=1.414, aspect_tol=0.25,
+                         center_v=None, center_v_tol_px=120,
+                         min_area_px=2000, max_area_ratio=0.6,
+                         roi_shrink=0.15, ocr=True, debug=False,
+                         return_stats=False):
+    """A4 纸轮廓检测 + 框内 OCR（两级设计，轮廓管几何、OCR 只回答身份）。
+
+    参数:
+        orientation    'portrait' 竖贴（h_px 取 0.297m 对应边）/ 'landscape' 横贴（0.210m）
+        aspect_ratio   A4 长宽比基准 √2，用于轮廓质量自证
+        aspect_tol     长宽比允许偏差比例（透视变形放宽）
+        center_v       纸中心纵坐标期望值（一般传相机 cy）；None 不做齐平过滤
+        min_area_px    候选轮廓最小像素面积
+        max_area_ratio 候选轮廓最大面积占帧面积比例
+        roi_shrink     OCR ROI 向内收缩比例（去纸边）
+        ocr            False 时只检测轮廓，char 一律 None（供主循环逐帧快检，
+                       OCR 由调用方异步补做）
+        return_stats   True 时返回 (results, stats)，stats 为各过滤条件的
+                       拒绝计数 dict，供现场诊断卡在哪一关
+
+    返回:
+        [{'char': 'B'|None, 'u','v': 轮廓中心像素,
+          'h_px': 纸高像素（orientation 对应边，竖直方向）,
+          'aspect': 长宽比, 'corners': 4x2 ndarray}, ...]
+        return_stats=True 时为 (上述列表, stats dict)
+    """
+    results = []
+    stats = {'contours_total': 0, 'rej_area': 0, 'rej_quad': 0,
+             'rej_aspect': 0, 'rej_center_v': 0, 'accepted': 0}
+    if frame is None or frame.size == 0:
+        return (results, stats) if return_stats else results
+
+    frame_area = frame.shape[0] * frame.shape[1]
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    stats['contours_total'] = len(contours)
+
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < min_area_px or area > max_area_ratio * frame_area:
+            stats['rej_area'] += 1
+            continue
+        peri = cv2.arcLength(cnt, True)
+        approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
+        if len(approx) != 4 or not cv2.isContourConvex(approx):
+            stats['rej_quad'] += 1
+            continue
+
+        corners = _order_corners(approx.reshape(4, 2))
+        # 四条边长：tl-tr(上)、tr-br(右)、br-bl(下)、bl-tl(左)
+        top = np.linalg.norm(corners[1] - corners[0])
+        right = np.linalg.norm(corners[2] - corners[1])
+        bottom = np.linalg.norm(corners[2] - corners[3])
+        left = np.linalg.norm(corners[3] - corners[0])
+        h_edge = (right + left) / 2.0    # 竖直方向边（抗 yaw 透视压缩）
+        w_edge = (top + bottom) / 2.0
+        long_edge, short_edge = max(h_edge, w_edge), min(h_edge, w_edge)
+        if short_edge < 1.0:
+            continue
+        aspect = long_edge / short_edge
+        if abs(aspect - aspect_ratio) > aspect_ratio * aspect_tol:
+            stats['rej_aspect'] += 1
+            continue
+
+        u = float(corners[:, 0].mean())
+        v = float(corners[:, 1].mean())
+        if center_v is not None and abs(v - center_v) > center_v_tol_px:
+            stats['rej_center_v'] += 1
+            continue
+
+        # h_px：orientation 对应的物理边（0.297m/0.210m）在竖直方向的像素长。
+        # 纸无旋转时竖直边即物理高边；有少量旋转时用边长本身更稳。
+        h_px = h_edge if orientation == 'portrait' else w_edge
+
+        char = None
+        if ocr:
+            roi = extract_paper_roi(frame, corners, shrink=roi_shrink)
+            char = _ocr_letter_roi(roi)
+
+        results.append({
+            'char': char,
+            'u': u, 'v': v,
+            'h_px': float(h_px),
+            'aspect': float(aspect),
+            'corners': corners,
+        })
+        stats['accepted'] += 1
+        if debug:
+            print(f"[A4候选] u={u:.1f} v={v:.1f} h_px={h_px:.1f} "
+                  f"aspect={aspect:.3f} char={char}")
+
+    return (results, stats) if return_stats else results
 
 
 # ===================== 主入口 =====================

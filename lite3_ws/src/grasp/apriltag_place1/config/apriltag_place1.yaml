@@ -1,0 +1,44 @@
+apriltag_place1:
+  ros__parameters:
+    # ── 外部触发接口 ──────────────────────────────────────────────────────────
+    trigger_topic: "/apriltag_place1/start"
+
+    # ── 摄像头（头部 Intel RealSense D435i RGB 流）────────────────────────────
+    # 注意：/dev/video4 是 RealSense，/dev/video0 是机械臂 USB 摄像头
+    # 以 v4l2-ctl --list-devices 现场确认
+    camera_device: "/dev/video4"
+    image_width: 640
+    image_height: 480
+    fps: 30
+
+    # ── 内参（2026-08-02 实测标定，landscape 横贴：0.5/0.7/0.8m 三点 fy 平均 826.9；
+    #    0.6m 测量值 885.7 偏差 >5% 已剔除。注意该值为 landscape 约定的等效 fy，
+    #    与节点内 tz = fy*0.210/h_px 配套使用，勿与其他方向的标定值混用）──
+    camera_matrix: [826.9, 0.0, 320.0, 0.0, 826.9, 240.0, 0.0, 0.0, 1.0]
+    dist_coeffs: [-0.1571, -0.218, -0.0024, -0.0011, 0.2089]
+
+    # ── Tag 参数 [TODO: tag_size_m 须用尺子量黑色编码区域边长，不含白边] ────
+    tag_family: "tag25h9"
+    target_tag_id: 0
+    tag_size_m: 0.083
+
+    # ── 站位 ──────────────────────────────────────────────────────────────────
+    closed_loop_end_dist: 0.35       # 视觉闭环终点：距 tag 该距离后转开环盲进
+    # final_forward_offset = 0.47 保证最终站位与旧逻辑一致：
+    # 盲进 blind = tz_measured - closed_loop_end_dist + final_forward_offset_m，
+    # final_check 通过时 tz_measured ≈ closed_loop_end_dist，blind ≈ 0.47m
+    final_forward_offset_m: 0.47
+
+    # ── 对准阈值（final_check 三项同时达标判定）────────────────────────────────
+    yaw_align_threshold_deg: 3.0
+    max_yaw_step_deg: 3.0            # yaw_align 单步旋转限幅，防惯性过冲
+    lateral_threshold_m: 0.03
+    distance_threshold_m: 0.03       # 相对 closed_loop_end_dist 的到位容差
+
+    # ── 流程控制 ──────────────────────────────────────────────────────────────
+    stable_frames: 15              # wait_detect 瞄准滤波帧数 / final_check 连续达标帧数
+    max_rounds: 10                 # yaw/lateral/approach 各相最大修正轮次
+    lost_tolerance_s: 2.0          # Tag 短暂丢失时沿用上次位姿的时长
+    detect_timeout_s: 10.0
+    cmd_vel_zero_timeout_s: 1.5      # /cmd_vel 持续为零才认为运动完成，机械狗惯性大需加长
+    move_timeout_s: 10.0

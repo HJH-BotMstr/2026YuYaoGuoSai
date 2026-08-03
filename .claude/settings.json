@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /home/ysc/lite_cog_ros2 -type f -name \"*.launch.py\" 2>/dev/null | head -20 && echo \"---\" && find /home/ysc/lite_cog_ros2 -type f \\\\\\( -name \"*motion*receiver*\" -o -name \"*motion*sender*\" \\\\\\) 2>/dev/null | head -20)",
+      "Read(//home/ysc/lite_cog_ros2/**)"
+    ]
+  }
+}

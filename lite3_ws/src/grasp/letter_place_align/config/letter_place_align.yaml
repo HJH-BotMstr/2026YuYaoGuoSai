@@ -1,0 +1,62 @@
+letter_place_align_node:
+  ros__parameters:
+    # ── 触发与完成信号 ──
+    trigger_topic: "/letter_place/start"   # std_msgs/String，"A/B/C/D"（人工发布）
+    place_topic:   "/grasp/place"          # std_msgs/String，对接 grasp_task
+
+    # ── 摄像头（机械狗头摄 Intel RealSense D435i RGB 流）──
+    # /dev/video4 = RealSense RGB；/dev/video0 是 RMONCAM 机械臂 USB 摄像头（grasp_task 用）
+    # 注意：USB 重插/重启后枚举索引会漂移，以 v4l2-ctl --list-devices 现场确认
+    camera_device: "/dev/video4"
+    image_width: 640
+    image_height: 480
+    fps: 30
+
+    # ── 内参（2026-08-02 实测标定，landscape 横贴：0.5/0.7/0.8m 三点 fy 平均 826.9；
+    #    0.6m 测量值 885.7 偏差 >5% 已剔除。注意该值为 landscape 约定的等效 fy，
+    #    与节点内 tz = fy*0.210/h_px 配套使用，勿与其他方向的标定值混用）──
+    camera_matrix: [826.9, 0.0, 320.0, 0.0, 826.9, 240.0, 0.0, 0.0, 1.0]
+    dist_coeffs: [-0.1571, -0.218, -0.0024, -0.0011, 0.2089]
+
+    # ── A4 纸参数（标准尺寸，一般不用改）──
+    paper_orientation: "landscape"   # portrait: 纸高边 0.297m / landscape: 0.210m
+    paper_aspect_ratio: 1.414        # √2，轮廓质量自证
+    aspect_tolerance: 0.25           # 长宽比允许偏差比例（透视变形）
+    center_v_tolerance_px: 120       # 纸中心纵坐标与 cy 的允许偏差（齐平过滤）
+    letter_offset_x_m: 0.0           # 字母相对纸中心的横向偏移（居中印刷为 0）
+    min_paper_area_px: 2000          # 候选轮廓最小像素面积
+    max_paper_area_ratio: 0.6        # 候选轮廓最大面积占帧面积比例
+
+    # ── 检测节奏 ──
+    detect_stale_s: 1.0              # 结果超过该时长视为丢失
+    lost_tolerance_s: 2.0            # 短暂丢失容忍（沿用最近位姿）
+    h_px_median_window: 5            # 纸高像素中位数平滑窗口
+    wrong_letter_frames: 15          # 连续识别为其他字母多少帧后回退告警
+    ocr_move_tol_px: 15.0            # 轮廓中心位移超过该值才重新 OCR
+    ocr_scale_tol: 0.10              # 轮廓尺寸变化超过该比例才重新 OCR
+
+    # ── 站位（target/final_forward 与 apriltag_place1 保持一致，勿单独调）──
+    target_distance_m: 0.08
+    final_forward_offset_m: 0.50
+    extra_forward_m: 0.05         # 仿 apriltag_place1 的 final_forward：最后额外开环前进
+    vision_min_distance_m: 0.35      # 视觉闭环距离下限（A4 出画临界）
+
+    # ── 阈值 ──
+    yaw_align_threshold_deg: 3.0
+    max_yaw_step_deg: 3.0
+    lateral_threshold_m: 0.03
+    distance_threshold_m: 0.03       # 相对 vision_min 的到位容差
+
+    # ── 流程控制 ──
+    max_rounds: 10
+    stable_frames: 10
+    detect_timeout_s: 15.0           # 比 apriltag 版略长（OCR 慢）
+    # phase_1 超时补救：目标字母曾确认且候选纸仍在画面中时，按几何估计距离开环前进
+    timeout_blind_forward: true
+    timeout_blind_min_target_frames: 5   # 本轮至少确认过目标字母这么多帧才补救
+    timeout_blind_max_m: 1.5             # 补救开环前进距离安全上限
+    cmd_vel_zero_timeout_s: 1.5
+    move_timeout_s: 10.0
+
+    # ── 调试 ──
+    show_debug_window: true
