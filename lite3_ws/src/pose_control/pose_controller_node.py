@@ -195,7 +195,7 @@ class PoseController(Node):
         self.gait_pub = self.create_publisher(String, "/cmd_gait", 10)
 
         self.create_timer(self.dt, self._control_cb)
-        self.create_timer(0.1, self._display)
+        self.create_timer(0.5, self._display)
 
         if self.enable_terminal:
             threading.Thread(target=self._input_loop, daemon=True).start()

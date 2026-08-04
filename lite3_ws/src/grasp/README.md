@@ -214,3 +214,256 @@ ros2 node list                        # 节点清单
 | 输入字母后 letter 节点没反应 | 编排器 30s 内以 2Hz 重发触发；查 letter 节点日志是否收到，摄像头是否被占用 |
 | 两个对齐节点抢摄像头 | yaml 均配 `/dev/video6`，编排器已按序拉起/关闭保证独占；若 letter 实际用别的摄像头改 `letter_place_align.yaml` 的 `camera_device` |
 | 重跑全流程 | grasp_task、letter_place_align 都是单轮节点，重跑需重启（或直接重launch 全流程） |
+
+
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.29°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.29°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.29°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.29°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.30°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.29°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.29°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[grasp_flow_node-4] [INFO] [1785842288.031652844] [block_align_node]: 色块稳定锁定: X_cam=48.3mm  Y_cam=398.1mm  dist=397.6mm
+[grasp_flow_node-4] [INFO] [1785842288.098639754] [block_align_node]: lateral_align 轮次 1: X_cam=48.3mm → Pose2D.y=-0.048m (polarity=-1)
+[pose_control-2] [INFO] [1785842288.143810406] [pose_controller]: Move command: x=0.000, y=-0.048, yaw=0.00deg, state=moving_y
+[grasp_flow_node-4] [INFO] [1785842288.147869564] [block_align_node]: 发布 /move  x=0.000  y=-0.048  theta=0.0°
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.30°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.30°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.30°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.29°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.29°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.29°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.29°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.30°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.30°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.30°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.30°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.30°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.30°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.30°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.31°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.31°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.30°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.31°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.31°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.31°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.31°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.31°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.32°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.32°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.32°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.32°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.32°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.31°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.31°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.31°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.31°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.32°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.31°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.31°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.31°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.31°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.31°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.31°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.30°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.30°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.30°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.30°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.30°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.513,-0.334,   0.30°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=moving_y  origin=(   9.98°)  cur=(0.513,-0.334,   0.30°)  tgt=(0.522,-0.382,  -9.68°)
+[pose_control-2] cmd=(+0.000,-0.097,+0.0000)  rear_blocked=True rear_dist=0.28m  [auto]
+[pose_control-2] state=moving_y  origin=(   9.98°)  cur=(0.512,-0.335,   0.19°)  tgt=(0.522,-0.382,  -9.68°)
+[pose_control-2] cmd=(+0.080,-0.097,+0.0036)  rear_blocked=True rear_dist=0.28m  [auto]
+[pose_control-2] state=moving_y  origin=(   9.98°)  cur=(0.506,-0.338,   0.40°)  tgt=(0.522,-0.382,  -9.68°)
+[pose_control-2] cmd=(+0.080,-0.094,-0.0005)  rear_blocked=True rear_dist=0.28m  [auto]
+[pose_control-2] state=moving_y  origin=(   9.98°)  cur=(0.502,-0.342,   0.88°)  tgt=(0.522,-0.382,  -9.68°)
+[pose_control-2] cmd=(+0.080,-0.087,-0.0202)  rear_blocked=True rear_dist=0.28m  [auto]
+[pose_control-2] state=moving_y  origin=(   9.98°)  cur=(0.507,-0.350,   0.89°)  tgt=(0.522,-0.382,  -9.68°)
+[pose_control-2] cmd=(+0.080,-0.074,-0.0206)  rear_blocked=True rear_dist=0.28m  [auto]
+[pose_control-2] state=moving_y  origin=(   9.98°)  cur=(0.517,-0.360,   0.77°)  tgt=(0.522,-0.382,  -9.68°)
+[pose_control-2] cmd=(+0.080,-0.050,-0.0166)  rear_blocked=True rear_dist=0.28m  [auto]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.530,-0.369,   0.19°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [arrived]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.547,-0.378,   0.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.552,-0.379,   0.50°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.552,-0.377,   0.77°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.552,-0.375,   0.45°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.552,-0.376,   0.23°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.551,-0.376,   0.49°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   0.91°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   0.96°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   0.96°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   0.97°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   0.97°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   0.97°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   0.99°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.01°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   0.99°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   0.99°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   0.98°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   0.99°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.23°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.23°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.22°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.22°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.22°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.26°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.25°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.25°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.26°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.26°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.25°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.25°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.25°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.25°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.25°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.25°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.25°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.25°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.25°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.25°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.25°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.25°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.25°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.24°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.23°)
+[pose_control-2] cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
+[pose_control-2] state=idle      origin=(   9.98°)  cur=(0.550,-0.375,   1.23°)
+
+

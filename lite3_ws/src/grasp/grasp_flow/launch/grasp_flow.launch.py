@@ -51,7 +51,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'enable_terminal': False,
-            'show_display': False,   # 关闭 10Hz 状态刷屏，保留 logger 告警
+            'show_display': True,    # 调试期打开：10Hz 打印 state/cmd/source，观察 moving_x 时的 vx
             'obstacle_stop_dist': 0.35,
             'command_topic': '/pose_control/command',
             # 机械狗对低速指令响应差，适当提高位置环增益

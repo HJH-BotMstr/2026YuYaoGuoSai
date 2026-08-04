@@ -1,4 +1,4 @@
-block_align:
+block_align_node:
   ros__parameters:
     # ── 触发接口 ──────────────────────────────────────────────────────────────
     trigger_topic: "/block_align/start"
@@ -20,6 +20,10 @@ block_align:
     # -1: 目标偏右(X_cam>0) → Pose2D.y 为负 → 机器狗向右移动
     # +1: 目标偏右(X_cam>0) → Pose2D.y 为正 → 机器狗向左移动
     lateral_polarity: -1
+
+    # ── 调试可视化 ────────────────────────────────────────────────────────────
+    # 无 X display 环境（SSH/机上直跑）必须保持 false，否则 Qt 加载 xcb 失败会崩
+    show_debug_window: true
 
     # ── 流程控制 ──────────────────────────────────────────────────────────────
     max_rounds: 5

@@ -237,10 +237,27 @@ class GraspTaskNode(Node):
         )
         self.memory = InspectionMemory(default_zone=cfg["inspection"]["default_zone"])
 
-        cam_device = cfg["hardware"]["arm_cam_device"]
-        self.arm_cam = _open_camera(cam_device, logger=self.get_logger())
+        # 摄像头懒打开：STANDBY 时不占用 /dev/video0，把设备让给 block_align 对齐节点，
+        # 进入 DETECTING 阶段再 open，抓完 release
+        self._cam_device = cfg["hardware"]["arm_cam_device"]
+
+    def _ensure_arm_cam_open(self):
+        if self.dry_run:
+            return
+        if self.arm_cam is not None:
+            return
+        self.arm_cam = _open_camera(self._cam_device, logger=self.get_logger())
         if self.arm_cam is None:
-            raise RuntimeError(f"机械臂摄像头打开失败: {cam_device}")
+            raise RuntimeError(f"机械臂摄像头打开失败: {self._cam_device}")
+
+    def _release_arm_cam(self):
+        if self.arm_cam is None:
+            return
+        try:
+            self.arm_cam.release()
+        except Exception as e:
+            self.get_logger().warning("释放摄像头时异常: %s" % (e,))
+        self.arm_cam = None
 
     # ------------------------------------------------------------------ #
     # 工具方法
@@ -473,6 +490,10 @@ class GraspTaskNode(Node):
 
         # phase_2: detect
         self._publish_state("DETECTING")
+        try:
+            self._ensure_arm_cam_open()
+        except Exception as e:
+            return self._fail(f"CAM_OPEN_FAILED:{e}")
         stable = self._detect_stable()
         if stable is None:
             return self._fail("DETECT_TIMEOUT")
@@ -486,6 +507,9 @@ class GraspTaskNode(Node):
         self._publish_state("GRASPING")
         if not self._approach_and_grasp(stable):
             return self._fail("GRASP_FAILED")
+
+        # 抓取完成后释放摄像头，让 letter_place_align 或后续流程可以自由使用
+        self._release_arm_cam()
 
         # phase_5: transport
         self._publish_state("TRANSPORT")
@@ -516,11 +540,7 @@ class GraspTaskNode(Node):
         """释放摄像头和机械臂资源。"""
         self.get_logger().info("释放资源...")
         if not self.dry_run:
-            try:
-                if self.arm_cam is not None:
-                    self.arm_cam.release()
-            except Exception as e:
-                self.get_logger().warning("释放摄像头时异常: %s" % (e))
+            self._release_arm_cam()
             try:
                 cv2.destroyAllWindows()
             except Exception:

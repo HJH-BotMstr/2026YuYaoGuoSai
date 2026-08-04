@@ -36,7 +36,7 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool, String
 
 # ── tools/grasp 路径 ───────────────────────────────────────────────────────── #
-_TOOLS_GRASP_DEFAULT = "/home/fishros/2026YuYaoGuoSai/tools/grasp"
+_TOOLS_GRASP_DEFAULT = os.path.expanduser("~/2026YuYaoGuoSai/tools/grasp")
 
 # ─── 状态常量 ──────────────────────────────────────────────────────────────── #
 STATE_WAIT_TRIGGER  = "wait_trigger"
@@ -77,6 +77,7 @@ class BlockAlignNode(Node):
         # -1: 目标偏右时向左移（Pose2D.y 正值）
         # 现场实测后调整；默认 -1（X_cam>0 偏右 → y=−X_cam/1000 → 狗向右）
         self.declare_parameter("lateral_polarity",       -1)
+        self.declare_parameter("show_debug_window",      False)
 
         # ── 读取参数 ─────────────────────────────────────────────────────── #
         self._trigger_topic  = self.get_parameter("trigger_topic").value
@@ -91,6 +92,7 @@ class BlockAlignNode(Node):
         self._cmdvel_zero_t  = self.get_parameter("cmd_vel_zero_timeout_s").value
         self._move_timeout   = self.get_parameter("move_timeout_s").value
         self._lat_polarity   = int(self.get_parameter("lateral_polarity").value)
+        self._show_debug     = bool(self.get_parameter("show_debug_window").value)
 
         # ── 加载 tools/grasp/config.yaml ─────────────────────────────────── #
         self._tools_cfg = self._load_tools_config()
@@ -154,6 +156,7 @@ class BlockAlignNode(Node):
         self._lat_rounds = 0
         self._app_rounds = 0
         self._phase_busy = False
+        self._settle_tracker_ready = False   # 见 _do_lateral_align
         self._detect_deadline = float("inf")
 
         # 主循环 10 Hz
@@ -210,6 +213,7 @@ class BlockAlignNode(Node):
                     self._lat_rounds = 0
                     self._app_rounds = 0
                     self._phase_busy = False
+                    self._settle_tracker_ready = False
                     self._cmdvel_motion_started = False
                     self._move_ignored_warned   = False
                     self._detect_deadline = time.monotonic() + self._detect_timeout
@@ -238,12 +242,13 @@ class BlockAlignNode(Node):
         candidates = self._detector.detect_all(frame)
         self._tracker.update(candidates)
 
-        # 调试窗口
-        vis = self._detector.visualize(frame.copy(), candidates[0] if candidates else None)
-        cv2.putText(vis, "state=%s" % self._state, (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-        cv2.imshow("block_align", vis)
-        cv2.waitKey(1)
+        # 调试窗口（无 X display 时会拉起 Qt 崩溃，默认关闭）
+        if self._show_debug:
+            vis = self._detector.visualize(frame.copy(), candidates[0] if candidates else None)
+            cv2.putText(vis, "state=%s" % self._state, (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+            cv2.imshow("block_align", vis)
+            cv2.waitKey(1)
 
         return self._tracker.get_stable_target()
 
@@ -270,6 +275,14 @@ class BlockAlignNode(Node):
     def _emit_grasp_start(self):
         self._pub_grasp.publish(Bool(data=True))
         self.get_logger().info("发布 /grasp/start = True")
+        # 立刻释放摄像头，把 /dev/video0 让给 grasp_task 的 DETECTING 阶段；
+        # grasp_flow 会随后杀掉本节点，spin 期间无需再持有设备
+        if self._cap is not None:
+            try:
+                self._cap.release()
+            except Exception as e:
+                self.get_logger().warning("释放摄像头异常: %s" % (e,))
+            self._cap = None
 
     # ──────────────────────────── 运动完成判断 ──────────────────────────────── #
 
@@ -369,16 +382,21 @@ class BlockAlignNode(Node):
         if self._phase_busy:
             if not self._is_cmd_vel_zero():
                 return
-            # 运动停止后重新检测
-            self._tracker = self._TargetTracker(
-                avg_window=self._tracker_avg,
-                lost_frames_max=self._tracker_lost,
-            )
+            # 运动停止后重新检测：tracker 只在"刚停下"那一帧重建一次，
+            # 之后连续多帧 update 才能凑够 stable_frames；每次都重建的话
+            # 计数永远从 0 开始，永远不会稳定，node 会一直卡在这里
+            if not self._settle_tracker_ready:
+                self._tracker = self._TargetTracker(
+                    avg_window=self._tracker_avg,
+                    lost_frames_max=self._tracker_lost,
+                )
+                self._settle_tracker_ready = True
             stable = self._detect_frame(frame)
             if stable is None:
                 return   # tracker 未稳定，等下一帧
             self._last_pose  = stable
             self._phase_busy = False
+            self._settle_tracker_ready = False
 
         pose  = self._last_pose
         X_cam = pose["pos_3d"][0]
@@ -407,7 +425,9 @@ class BlockAlignNode(Node):
         self.get_logger().info(
             "lateral_align 轮次 %d: X_cam=%.1fmm → Pose2D.y=%.3fm (polarity=%d)" % (
                 self._lat_rounds, X_cam, y_move, self._lat_polarity))
-        self._reset_origin()
+        # 不发 reset_origin：/move 本身会把 _integral_* 清零、start_pose 用当前位姿，
+        # 但 reset_origin 跟 /move 走两个话题不保序，先到会把 target 清空、state=idle，
+        # 于是 approach 阶段 /move 一发就被立刻取消，_is_cmd_vel_zero() 误判"到位"
         self._send_move(0.0, y_move, 0.0)
         self._phase_busy = True
 
@@ -417,15 +437,19 @@ class BlockAlignNode(Node):
         if self._phase_busy:
             if not self._is_cmd_vel_zero():
                 return
-            self._tracker = self._TargetTracker(
-                avg_window=self._tracker_avg,
-                lost_frames_max=self._tracker_lost,
-            )
+            # 同 _do_lateral_align：tracker 只在刚停下时重建一次
+            if not self._settle_tracker_ready:
+                self._tracker = self._TargetTracker(
+                    avg_window=self._tracker_avg,
+                    lost_frames_max=self._tracker_lost,
+                )
+                self._settle_tracker_ready = True
             stable = self._detect_frame(frame)
             if stable is None:
                 return
             self._last_pose  = stable
             self._phase_busy = False
+            self._settle_tracker_ready = False
 
         pose  = self._last_pose
         Y_cam = pose["pos_3d"][1]          # mm，光轴向前
@@ -451,7 +475,7 @@ class BlockAlignNode(Node):
         self.get_logger().info(
             "approach 轮次 %d: Y_cam=%.1fmm  delta=%.3fm" % (
                 self._app_rounds, Y_cam, delta))
-        self._reset_origin()
+        # 见 _do_lateral 注释：reset_origin 与 /move 竞态会使 /move 被作废
         self._send_move(delta, 0.0, 0.0)
         self._phase_busy = True
 
