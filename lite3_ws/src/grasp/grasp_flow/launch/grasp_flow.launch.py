@@ -8,7 +8,7 @@
   3. grasp_task        机械臂抓取/放置状态机（启动后自动进入准备姿态 STANDBY）
   4. grasp_flow_node   全流程编排器
 
-apriltag_place1（抓取对齐）与 letter_place_align（放置对齐）两个节点
+block_align（抓取对齐）与 letter_place_align（放置对齐）两个节点
 不在此处启动——它们由 grasp_flow_node 按需拉起/关闭，保证摄像头与
 /move 指令总线任意时刻只有一个对齐节点占用。
 

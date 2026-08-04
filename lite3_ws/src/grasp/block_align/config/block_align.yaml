@@ -1,0 +1,29 @@
+block_align:
+  ros__parameters:
+    # ── 触发接口 ──────────────────────────────────────────────────────────────
+    trigger_topic: "/block_align/start"
+
+    # ── tools/grasp 配置路径（BlockDetection 参数从此读取）─────────────────────
+    tools_config_path: "/home/ysc/2026YuYaoGuoSai/tools/grasp/config.yaml"
+
+    # ── 摄像头（机械臂 USB 摄像头，与 grasp_task 相同）────────────────────────
+    camera_device: "/dev/video0"
+
+    # ── 目标停止距离（视觉闭环距色块的目标距离，需现场标定）───────────────────
+    target_distance_m: 0.15
+
+    # ── 对准阈值 ──────────────────────────────────────────────────────────────
+    lateral_threshold_mm: 10.0      # X_cam 横向偏差死区（mm）
+    distance_threshold_m: 0.02     # 前向距离死区（m）
+
+    # ── 极性参数 [TODO: 现场实测后调整] ──────────────────────────────────────
+    # -1: 目标偏右(X_cam>0) → Pose2D.y 为负 → 机器狗向右移动
+    # +1: 目标偏右(X_cam>0) → Pose2D.y 为正 → 机器狗向左移动
+    lateral_polarity: -1
+
+    # ── 流程控制 ──────────────────────────────────────────────────────────────
+    max_rounds: 5
+    stable_frames: 10
+    detect_timeout_s: 15.0
+    cmd_vel_zero_timeout_s: 0.5
+    move_timeout_s: 10.0

@@ -6,7 +6,7 @@
   1. WAIT_DOG_READY     等待机械狗进入自动模式（/leg_odom2 有新鲜数据，
                         即 lite3_driver 已启动并完成唤醒序列）
   2. WAIT_ARM_STANDBY   等待 grasp_task 机械臂进入准备姿态（/grasp/state == STANDBY）
-  3. APRILTAG_ALIGN     拉起 apriltag_place1 节点并触发对齐；
+  3. BLOCK_ALIGN        拉起 block_align 节点并触发色块对齐；
                         对齐完成它会自动发 /grasp/start
   4. GRASPING           监视 grasp_task 抓取，直到 /grasp/state == TRANSPORT（运输姿态）
   5. WAIT_MANUAL_LETTER 提示人工搬运到放置点，命令行输入放置字母(A/B/C/D)后
@@ -15,7 +15,7 @@
                         监视 grasp_task 放置直到 /grasp/result
   7. DONE / ERROR       终态
 
-两个对齐节点（apriltag_place1 / letter_place_align）由本节点按需拉起与关闭，
+两个对齐节点（block_align / letter_place_align）由本节点按需拉起与关闭，
 保证摄像头设备与 /move 指令总线在任意时刻只有一个对齐节点占用。
 """
 
@@ -39,14 +39,14 @@ class GraspFlowNode(Node):
     # 状态名
     ST_WAIT_DOG = "WAIT_DOG_READY"
     ST_WAIT_ARM = "WAIT_ARM_STANDBY"
-    ST_APRILTAG = "APRILTAG_ALIGN"
+    ST_BLOCK_ALIGN = "BLOCK_ALIGN"
     ST_GRASPING = "GRASPING"
     ST_WAIT_LETTER = "WAIT_MANUAL_LETTER"
     ST_PLACING = "LETTER_PLACING"
     ST_DONE = "DONE"
     ST_ERROR = "ERROR"
 
-    # grasp_task 收到 /grasp/start 后进入的状态（说明 apriltag 触发已生效）。
+    # grasp_task 收到 /grasp/start 后进入的状态（说明色块对齐触发已生效）。
     # dry_run 下 DETECTING/ALIGNING/GRASPING 可能瞬间冲过，主循环读到时已是
     # TRANSPORT/PLACING，故后续状态也算"已接管"
     GRASP_ACTIVE_STATES = ("DETECTING", "ALIGNING", "GRASPING",
@@ -59,10 +59,10 @@ class GraspFlowNode(Node):
         self.declare_parameter("odom_topic", "/leg_odom2")
         self.declare_parameter("grasp_state_topic", "/grasp/state")
         self.declare_parameter("grasp_result_topic", "/grasp/result")
-        self.declare_parameter("apriltag_trigger_topic", "/apriltag_place1/start")
+        self.declare_parameter("block_align_trigger_topic", "/block_align/start")
         self.declare_parameter("letter_trigger_topic", "/letter_place/start")
         self.declare_parameter("odom_fresh_timeout_s", 1.0)
-        self.declare_parameter("apriltag_timeout_s", 240.0)
+        self.declare_parameter("block_align_timeout_s", 240.0)
         self.declare_parameter("grasp_timeout_s", 300.0)
         self.declare_parameter("letter_place_timeout_s", 600.0)
         self.declare_parameter("enable_prompt", True)
@@ -70,7 +70,7 @@ class GraspFlowNode(Node):
 
         gp = self.get_parameter
         self._odom_fresh_s = gp("odom_fresh_timeout_s").value
-        self._apriltag_timeout_s = gp("apriltag_timeout_s").value
+        self._block_align_timeout_s = gp("block_align_timeout_s").value
         self._grasp_timeout_s = gp("grasp_timeout_s").value
         self._letter_timeout_s = gp("letter_place_timeout_s").value
         self._enable_prompt = gp("enable_prompt").value
@@ -85,8 +85,8 @@ class GraspFlowNode(Node):
             Bool, gp("grasp_result_topic").value, self._grasp_result_cb, 10)
 
         # ── 发布 ──────────────────────────────────────────────────────────── #
-        self._pub_apriltag = self.create_publisher(
-            Bool, gp("apriltag_trigger_topic").value, 10)
+        self._pub_block_align = self.create_publisher(
+            Bool, gp("block_align_trigger_topic").value, 10)
         self._pub_letter = self.create_publisher(
             String, gp("letter_trigger_topic").value, 10)
 
@@ -218,7 +218,7 @@ class GraspFlowNode(Node):
         handler = {
             self.ST_WAIT_DOG: self._st_wait_dog,
             self.ST_WAIT_ARM: self._st_wait_arm,
-            self.ST_APRILTAG: self._st_apriltag,
+            self.ST_BLOCK_ALIGN: self._st_block_align,
             self.ST_GRASPING: self._st_grasping,
             self.ST_WAIT_LETTER: self._st_wait_letter,
             self.ST_PLACING: self._st_placing,
@@ -236,37 +236,37 @@ class GraspFlowNode(Node):
 
     def _st_wait_arm(self):
         if self._grasp_state == "STANDBY":
-            self.get_logger().info("机械臂已进入准备姿态，启动 AprilTag 抓取对齐")
-            self._spawn("apriltag", "apriltag_place1",
-                        "apriltag_place1_node", "apriltag_place1.yaml")
-            self._set_state(self.ST_APRILTAG)
+            self.get_logger().info("机械臂已进入准备姿态，启动色块对齐")
+            self._spawn("block_align", "block_align",
+                        "block_align_node", "block_align.yaml")
+            self._set_state(self.ST_BLOCK_ALIGN)
             return
         if self._grasp_state.startswith("ERROR"):
             self._fail(f"grasp_task 初始化失败: {self._grasp_state}")
             return
         self._heartbeat("等待 grasp_task 机械臂进入准备姿态(STANDBY) …")
 
-    def _st_apriltag(self):
-        # 周期重发触发，覆盖 apriltag 节点刚拉起订阅未就绪的窗口；
+    def _st_block_align(self):
+        # 周期重发触发，覆盖 block_align 节点刚拉起订阅未就绪的窗口；
         # 节点处于活动态时会忽略重复触发，无副作用
         if self._now() - self._last_trigger_pub >= 1.0:
             self._last_trigger_pub = self._now()
-            self._pub_apriltag.publish(Bool(data=True))
+            self._pub_block_align.publish(Bool(data=True))
 
         if self._grasp_state in self.GRASP_ACTIVE_STATES:
             self.get_logger().info(
-                "AprilTag 对齐完成，grasp_task 已接管，关闭 apriltag 节点释放摄像头")
-            self._kill("apriltag")
+                "色块对齐完成，grasp_task 已接管，关闭 block_align 节点释放摄像头")
+            self._kill("block_align")
             self._set_state(self.ST_GRASPING)
             return
         if self._grasp_state.startswith("ERROR"):
-            self._kill("apriltag")
+            self._kill("block_align")
             self._fail(f"grasp_task 异常: {self._grasp_state}")
             return
-        if self._elapsed() > self._apriltag_timeout_s:
-            self._pub_apriltag.publish(Bool(data=False))  # 取消 apriltag 侧状态机
-            self._kill("apriltag")
-            self._fail("AprilTag 对齐超时（详见 apriltag_place1 节点日志）")
+        if self._elapsed() > self._block_align_timeout_s:
+            self._pub_block_align.publish(Bool(data=False))  # 取消 block_align 侧状态机
+            self._kill("block_align")
+            self._fail("色块对齐超时（详见 block_align 节点日志）")
 
     def _st_grasping(self):
         # PLACING 也算抓取完成：grasp_task 已越过 TRANSPORT（运输姿态）
