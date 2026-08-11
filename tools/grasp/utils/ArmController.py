@@ -55,6 +55,12 @@ SCS_6_STATUS_VALUE    = 2047
 DEFAULT_SPEED = 1500
 DEFAULT_ACC   = 50
 
+# 夹爪舵机寄存器地址（Feetech STS/SMS 内存表）
+REG_MAX_TORQUE_LIMIT = 16   # EEPROM, 2 字节, 0-1000
+REG_MODE             = 33   # EEPROM, 1 字节, 0=位置模式
+REG_TORQUE_ENABLE    = 40   # SRAM,   1 字节, 1=使能
+REG_LOCK             = 55   # SRAM,   1 字节, 0=解锁 EEPROM 可写
+
 # 安全范围（逆运动学输出超出则拒绝执行）
 SAFE_ANGLE_3 = (1000, 3200)
 SAFE_ANGLE_4 = (540,  3400)
@@ -67,6 +73,7 @@ _DEFAULT_CFG = {
     "gripper_open_val":       SCS_1_STATUS_VALUE,
     "gripper_close_val":      SCS_1_INIT_VALUE,
     "gripper_load_threshold": 200,
+    "gripper_max_torque":     400,   # 夹爪舵机最大力矩上限（0-1000），封顶防堵转
     "grasp_retry_max":        3,
     "wait_position_timeout":  5.0,
     "wait_position_threshold":30,
@@ -89,7 +96,54 @@ class ArmController:
         if self.portHandler.setBaudRate(int(self._cfg.get("arm_serial_baud", 500000))):
             logger.info("波特率设置成功")
         else:
-            logger.error("波特率设置失败")                                
+            logger.error("波特率设置失败")
+
+        # 夹爪舵机安全初始化：位置模式 + 力矩上限 + 力矩使能
+        self._init_gripper_safety()
+
+    def _init_gripper_safety(self) -> None:
+        """
+        夹爪舵机上电初始化：
+          1) 确保工作在位置模式（mode=0）
+          2) 把 Max_Torque_Limit 写到 cfg 指定值（默认 400/1000 = 40%）
+          3) 确保力矩使能
+
+        Max_Torque_Limit 是 EEPROM 寄存器，写入需先解锁 lock=0，写完锁回 lock=1。
+        为减少 EEPROM 磨损，只在读到的值与目标不一致时才写。
+        """
+        ph = self.packetHandler
+        sid = SCS_ID_1
+        target_torque = int(self._cfg["gripper_max_torque"])
+        target_torque = max(0, min(1000, target_torque))
+
+        try:
+            mode, comm_m, _  = ph.read1ByteTxRx(sid, REG_MODE)
+            torq, comm_t, _  = ph.read2ByteTxRx(sid, REG_MAX_TORQUE_LIMIT)
+            if comm_m != COMM_SUCCESS or comm_t != COMM_SUCCESS:
+                logger.warning("夹爪舵机寄存器读取失败，跳过安全初始化（检查 ID/接线）")
+                return
+
+            need_write_mode   = (mode != 0)
+            need_write_torque = (torq != target_torque)
+
+            if need_write_mode or need_write_torque:
+                ph.write1ByteTxRx(sid, REG_LOCK, 0)                # 解锁 EEPROM
+                if need_write_mode:
+                    ph.write1ByteTxRx(sid, REG_MODE, 0)
+                    logger.info("夹爪舵机 mode: %d -> 0 (位置模式)", mode)
+                if need_write_torque:
+                    ph.write2ByteTxRx(sid, REG_MAX_TORQUE_LIMIT, target_torque)
+                    logger.info("夹爪舵机 Max_Torque_Limit: %d -> %d",
+                                torq, target_torque)
+                ph.write1ByteTxRx(sid, REG_LOCK, 1)                # 重新锁定
+            else:
+                logger.info("夹爪舵机已在位置模式，力矩上限=%d，无需改写 EEPROM",
+                            target_torque)
+
+            # 力矩使能（SRAM，每次上电都要写）
+            ph.write1ByteTxRx(sid, REG_TORQUE_ENABLE, 1)
+        except Exception as e:
+            logger.warning("夹爪安全初始化异常：%s（继续运行，可手动检查）", e)
 
     def set_pose(self, mode: int = 0, keep_gripper: bool = False) -> None:
         """切换预设姿态。0=初始 1=姿态1 2=运动 3=运输水平 4=运输垂直
@@ -184,8 +238,20 @@ class ArmController:
         logger.warning("急停：所有舵机已断力矩")
 
     def finalize(self) -> None:
-        """关闭串口。"""
-        self.portHandler.closePort()
+        """安全关闭：先给所有舵机断力矩再关串口。
+
+        断力矩前提是位置已到位（否则臂会因重力自然下垂）。调用方应先
+        set_pose(0) 并等它稳定，再进 finalize。断了力矩后即便进程崩掉、
+        串口关闭，舵机也不会继续通电发热，能避免"忘复位 → 舵机堵转过热"。
+        """
+        try:
+            self.emergency_stop()
+        except Exception as e:
+            logger.warning("finalize 中断力矩失败（继续关串口）: %s", e)
+        try:
+            self.portHandler.closePort()
+        except Exception as e:
+            logger.warning("串口关闭异常: %s", e)
 
     def open_gripper(self) -> None:
         """张开夹爪。"""

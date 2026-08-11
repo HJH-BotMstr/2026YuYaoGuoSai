@@ -81,7 +81,7 @@ class LetterPlaceAlignNode(Node):
         # ── 参数声明 ────────────────────────────────────────────────────────── #
         self.declare_parameter("trigger_topic",           "/letter_place/start")
         self.declare_parameter("place_topic",             "/grasp/place")
-        self.declare_parameter("camera_device",           "/dev/video4")
+        self.declare_parameter("camera_device",           "/dev/video6")
         self.declare_parameter("image_width",             640)
         self.declare_parameter("image_height",            480)
         self.declare_parameter("fps",                     30)

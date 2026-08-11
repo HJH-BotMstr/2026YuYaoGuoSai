@@ -14,6 +14,7 @@ grasp_task 主节点：把 tools/grasp 的 8-phase 抓取流程封装为 ROS2 �
 """
 import sys
 import os
+import signal
 import time
 import threading
 import logging
@@ -366,8 +367,10 @@ class GraspTaskNode(Node):
             self._reset_command()
             self._motion_waiter.reset()
 
-            # 发布横向移动：+y 为左移，X_cam>0 表示目标偏右，需要狗向左移动补偿
-            msg = Pose2D(x=0.0, y=X_cam / 1000.0, theta=0.0)
+            # 发布横向移动：ROS 约定 Pose2D.y 正=左移；相机侧 X_cam>0 表示物块在图像/视野右侧，
+            # 要把它拉到画面中心，狗需要向右移动 → y 取负号。
+            # 与 block_align 的 lateral_polarity=-1 保持一致。
+            msg = Pose2D(x=0.0, y=-X_cam / 1000.0, theta=0.0)
             self._move_pub.publish(msg)
             self.get_logger().info("第 %d 轮横向对齐: y=%.3fm" % (round_i + 1, msg.y))
 
@@ -537,19 +540,58 @@ class GraspTaskNode(Node):
     # 资源释放
     # ------------------------------------------------------------------ #
     def finalize(self):
-        """释放摄像头和机械臂资源。"""
+        """释放摄像头和机械臂资源。退出前先让机械臂回初始姿态并张开夹爪。
+
+        为防止用户连按 Ctrl+C 打断复位流程（KeyboardInterrupt 继承自
+        BaseException，普通 try/except Exception 抓不到），进入本函数后
+        暂时忽略 SIGINT/SIGTERM，跑完再恢复。每一步都单独 try，一步炸掉
+        不影响后一步——最关键的是最后 arm.finalize() 里的 emergency_stop
+        必须发出，才能断力矩防舵机过热。
+        """
         self.get_logger().info("释放资源...")
-        if not self.dry_run:
-            self._release_arm_cam()
-            try:
-                cv2.destroyAllWindows()
-            except Exception:
-                pass
-            try:
+
+        prev_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        prev_sigterm = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        try:
+            if not self.dry_run:
+                try:
+                    self._release_arm_cam()
+                except BaseException as e:
+                    self.get_logger().warning("释放摄像头异常: %s" % (e,))
+                try:
+                    cv2.destroyAllWindows()
+                except BaseException:
+                    pass
+
                 if self.arm is not None:
-                    self.arm.finalize()
-            except Exception as e:
-                self.get_logger().warning("释放机械臂时异常: %s" % (e))
+                    self.get_logger().info("安全复位：张开夹爪 + 回初始姿态 + 断力矩")
+                    # 每一步都独立 try——open_gripper 挂掉不影响 set_pose，
+                    # set_pose 挂掉也一定要走到 arm.finalize() 里的 emergency_stop
+                    try:
+                        self.arm.open_gripper()
+                    except BaseException as e:
+                        self.get_logger().warning("open_gripper 异常: %s" % (e,))
+                    try:
+                        time.sleep(0.3)
+                    except BaseException:
+                        pass
+                    try:
+                        self.arm.set_pose(0)
+                    except BaseException as e:
+                        self.get_logger().warning("set_pose(0) 异常: %s" % (e,))
+                    try:
+                        time.sleep(2.5)   # 等舵机走完初始姿态
+                    except BaseException:
+                        pass
+                    try:
+                        # arm.finalize 已改造成"先 emergency_stop 再关串口"，
+                        # 即使前面 set_pose 没到位，这里也会把六路舵机断力矩防过热
+                        self.arm.finalize()
+                    except BaseException as e:
+                        self.get_logger().warning("arm.finalize 异常: %s" % (e,))
+        finally:
+            signal.signal(signal.SIGINT, prev_sigint)
+            signal.signal(signal.SIGTERM, prev_sigterm)
 
 
 def main(args=None):

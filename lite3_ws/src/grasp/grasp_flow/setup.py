@@ -24,6 +24,7 @@ setup(
     entry_points={
         'console_scripts': [
             'grasp_flow_node = grasp_flow.grasp_flow_node:main',
+            'grasp_flow_node_b = grasp_flow.grasp_flow_node_b:main',
         ],
     },
 )

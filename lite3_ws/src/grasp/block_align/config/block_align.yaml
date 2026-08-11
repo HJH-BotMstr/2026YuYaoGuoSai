@@ -10,7 +10,7 @@ block_align_node:
     camera_device: "/dev/video0"
 
     # ── 目标停止距离（视觉闭环距色块的目标距离，需现场标定）───────────────────
-    target_distance_m: 0.15
+    target_distance_m: 0.10 #0.15
 
     # ── 对准阈值 ──────────────────────────────────────────────────────────────
     lateral_threshold_mm: 10.0      # X_cam 横向偏差死区（mm）

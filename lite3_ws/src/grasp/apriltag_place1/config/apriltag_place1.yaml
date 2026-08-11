@@ -4,9 +4,9 @@ apriltag_place1:
     trigger_topic: "/apriltag_place1/start"
 
     # ── 摄像头（头部 Intel RealSense D435i RGB 流）────────────────────────────
-    # 注意：/dev/video4 是 RealSense，/dev/video0 是机械臂 USB 摄像头
+    # 注意：/dev/video6 是 RealSense（真机实测），/dev/video0 是机械臂 USB 摄像头
     # 以 v4l2-ctl --list-devices 现场确认
-    camera_device: "/dev/video4"
+    camera_device: "/dev/video6"
     image_width: 640
     image_height: 480
     fps: 30

@@ -5,9 +5,9 @@ letter_place_align_node:
     place_topic:   "/grasp/place"          # std_msgs/String，对接 grasp_task
 
     # ── 摄像头（机械狗头摄 Intel RealSense D435i RGB 流）──
-    # /dev/video4 = RealSense RGB；/dev/video0 是 RMONCAM 机械臂 USB 摄像头（grasp_task 用）
+    # /dev/video6 = RealSense RGB（真机实测）；/dev/video0 是 RMONCAM 机械臂 USB 摄像头（grasp_task 用）
     # 注意：USB 重插/重启后枚举索引会漂移，以 v4l2-ctl --list-devices 现场确认
-    camera_device: "/dev/video4"
+    camera_device: "/dev/video6"
     image_width: 640
     image_height: 480
     fps: 30

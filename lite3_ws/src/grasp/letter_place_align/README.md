@@ -70,7 +70,7 @@ ros2 topic pub /letter_place/start std_msgs/String "data: 'X'" -r 1 -t 3
 
 ## 内参标定（距离精度的前提）
 
-yaml 中 `camera_matrix` 若与实际头摄 RealSense RGB 流（/dev/video4，枚举可能漂移）
+yaml 中 `camera_matrix` 若与实际头摄 RealSense RGB 流（/dev/video6，枚举可能漂移）
 不符时，`tz = fy * H / h_px` 会按比例整体偏差。上机后用已知距离反解 fy：
 
 ```bash

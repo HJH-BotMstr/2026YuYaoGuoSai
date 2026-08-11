@@ -1,28 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""抓取全流程编排节点。
+"""抓取全流程编排节点（放置对齐已解耦为外部接口版本）。
+
+与 grasp_flow_node.py 的差异：
+  - 完全去掉 letter_place_align：不再拉起字母对齐节点，也不再需要
+    命令行选择字母。
+  - 放置阶段改由外部接口触发：其它模块判定机械狗到位后，向
+    /grasp_flow/place_ready 发一次 std_msgs/Bool(data=true) 即可
+    激活机械臂放置操作。
+  - 临时占位：外部接口接入前，在本节点所在终端按回车（任意一行输入）
+    等同于收到一次外部触发消息，便于手工联调。
+  - 放置目标区硬编码为 HARDCODED_LETTER（默认 "B"）。要换字母改此处即可。
 
 任务流程：
-  1. WAIT_DOG_READY     等待机械狗进入自动模式（/leg_odom2 有新鲜数据，
-                        即 lite3_driver 已启动并完成唤醒序列）
-  2. WAIT_ARM_STANDBY   等待 grasp_task 机械臂进入准备姿态（/grasp/state == STANDBY）
-  3. BLOCK_ALIGN        拉起 block_align 节点并触发色块对齐；
-                        对齐完成它会自动发 /grasp/start
-  4. GRASPING           监视 grasp_task 抓取，直到 /grasp/state == TRANSPORT（运输姿态）
-  5. WAIT_MANUAL_LETTER 提示人工搬运到放置点，命令行输入放置字母(A/B/C/D)后
-                        拉起 letter_place_align 节点并触发放置对齐
-  6. LETTER_PLACING     letter_place_align 对齐完成自动发 /grasp/place，
+  1. WAIT_DOG_READY     等待机械狗进入自动模式
+  2. WAIT_ARM_STANDBY   等待 grasp_task 机械臂 STANDBY
+  3. BLOCK_ALIGN        拉起 block_align 触发色块对齐
+  4. GRASPING           监视 grasp_task 抓取直到 TRANSPORT
+  5. WAIT_MANUAL_LETTER 等待 /grasp_flow/place_ready 或终端回车触发放置
+  6. LETTER_PLACING     发 /grasp/place（zone=HARDCODED_LETTER），
                         监视 grasp_task 放置直到 /grasp/result
   7. DONE / ERROR       终态
-
-两个对齐节点（block_align / letter_place_align）由本节点按需拉起与关闭，
-保证摄像头设备与 /move 指令总线在任意时刻只有一个对齐节点占用。
 """
 
 import os
 import queue
 import signal
 import subprocess
+import sys
 import threading
 
 import rclpy
@@ -31,7 +36,15 @@ from std_msgs.msg import Bool, String
 from nav_msgs.msg import Odometry
 from ament_index_python.packages import get_package_share_directory
 
+# 将 tools/grasp 加入路径以便 Ctrl+C 时能调用 ArmController 复位
+TOOLS_GRASP = "/home/ysc/2026YuYaoGuoSai/tools/grasp"
+if TOOLS_GRASP not in sys.path:
+    sys.path.insert(0, TOOLS_GRASP)
+
 VALID_LETTERS = ("A", "B", "C", "D")
+
+# 硬编码放置字母：改这里就换目标区
+HARDCODED_LETTER = "B"
 
 
 class GraspFlowNode(Node):
@@ -53,28 +66,35 @@ class GraspFlowNode(Node):
                            "TRANSPORT", "PLACING", "DONE")
 
     def __init__(self):
-        super().__init__("grasp_flow_node")
+        super().__init__("grasp_flow_node_b")
 
         # ── 参数 ──────────────────────────────────────────────────────────── #
         self.declare_parameter("odom_topic", "/leg_odom2")
         self.declare_parameter("grasp_state_topic", "/grasp/state")
         self.declare_parameter("grasp_result_topic", "/grasp/result")
         self.declare_parameter("block_align_trigger_topic", "/block_align/start")
-        self.declare_parameter("letter_trigger_topic", "/letter_place/start")
+        self.declare_parameter("grasp_place_topic", "/grasp/place")
+        self.declare_parameter("place_trigger_topic", "/grasp_flow/place_ready")
         self.declare_parameter("odom_fresh_timeout_s", 1.0)
         self.declare_parameter("block_align_timeout_s", 240.0)
         self.declare_parameter("grasp_timeout_s", 300.0)
-        self.declare_parameter("letter_place_timeout_s", 600.0)
+        self.declare_parameter("place_timeout_s", 600.0)
         self.declare_parameter("enable_prompt", True)
         self.declare_parameter("manage_align_nodes", True)
+        self.declare_parameter("arm_serial_port", "/dev/ttyUSB0")
+        self.declare_parameter("tools_config_path",
+                               "/home/ysc/2026YuYaoGuoSai/tools/grasp/config.yaml")
 
         gp = self.get_parameter
         self._odom_fresh_s = gp("odom_fresh_timeout_s").value
         self._block_align_timeout_s = gp("block_align_timeout_s").value
         self._grasp_timeout_s = gp("grasp_timeout_s").value
-        self._letter_timeout_s = gp("letter_place_timeout_s").value
+        self._place_timeout_s = gp("place_timeout_s").value
         self._enable_prompt = gp("enable_prompt").value
         self._manage = gp("manage_align_nodes").value
+        self._arm_port = gp("arm_serial_port").value
+        self._config_path = gp("tools_config_path").value
+        self._place_trigger_topic = gp("place_trigger_topic").value
 
         # ── 订阅 ──────────────────────────────────────────────────────────── #
         self.create_subscription(
@@ -83,12 +103,16 @@ class GraspFlowNode(Node):
             String, gp("grasp_state_topic").value, self._grasp_state_cb, 10)
         self.create_subscription(
             Bool, gp("grasp_result_topic").value, self._grasp_result_cb, 10)
+        # 放置就绪外部接口：未来由到位判定模块发布 True 后触发放置
+        self.create_subscription(
+            Bool, self._place_trigger_topic, self._place_trigger_cb, 10)
 
         # ── 发布 ──────────────────────────────────────────────────────────── #
         self._pub_block_align = self.create_publisher(
             Bool, gp("block_align_trigger_topic").value, 10)
-        self._pub_letter = self.create_publisher(
-            String, gp("letter_trigger_topic").value, 10)
+        # 放置由本节点直接向 grasp_task 发触发，不再走 letter_place_align
+        self._pub_grasp_place = self.create_publisher(
+            String, gp("grasp_place_topic").value, 10)
 
         # ── 运行时状态 ────────────────────────────────────────────────────── #
         self._state = self.ST_WAIT_DOG
@@ -99,17 +123,23 @@ class GraspFlowNode(Node):
         self._error_reason = ""
         self._error_retriable = False
         self._last_heartbeat = 0.0
-        self._last_trigger_pub = 0.0       # 触发话题重发节拍
-        self._letter_pub_until = 0.0       # 字母触发持续重发截止时刻
+        self._last_trigger_pub = 0.0       # /grasp/place 重发节拍
+        self._place_pub_until = 0.0        # /grasp/place 持续重发截止时刻
+        self._place_triggered = False      # 收到 /grasp_flow/place_ready 或终端回车
 
         self._input_queue = queue.Queue()
         self._procs = {}                   # key -> subprocess.Popen
+        self._arm_ctrl = None              # 延迟初始化，用于 Ctrl+C 复位
 
+        # 终端回车作为临时触发；外部话题接入后仍可保留，同时生效
         if self._enable_prompt:
             threading.Thread(target=self._input_loop, daemon=True).start()
 
         self.create_timer(0.1, self._main_loop)
-        self.get_logger().info("grasp_flow 编排节点已启动，等待机械狗进入自动模式 …")
+        self.get_logger().info(
+            "grasp_flow_b 编排节点已启动（放置字母=%s，触发话题=%s），"
+            "等待机械狗进入自动模式 …"
+            % (HARDCODED_LETTER, self._place_trigger_topic))
 
     # ═══════════════════════════ 回调 ═══════════════════════════════════════ #
 
@@ -125,6 +155,22 @@ class GraspFlowNode(Node):
         # 只在放置监控阶段采信，避免历史消息干扰
         if self._state == self.ST_PLACING:
             self._grasp_result = msg.data
+
+    def _place_trigger_cb(self, msg):
+        # 只接受 True；只在等待放置阶段生效，避免抓取中途误触发
+        if not msg.data:
+            return
+        if self._state != self.ST_WAIT_LETTER:
+            self.get_logger().warning(
+                f"忽略 {self._place_trigger_topic} 触发：当前状态 {self._state}"
+                " 非 WAIT_MANUAL_LETTER"
+            )
+            return
+        if not self._place_triggered:
+            self.get_logger().info(
+                f"收到 {self._place_trigger_topic}，放置就绪触发生效"
+            )
+        self._place_triggered = True
 
     def _input_loop(self):
         while rclpy.ok():
@@ -212,6 +258,27 @@ class GraspFlowNode(Node):
         for key in list(self._procs):
             self._kill(key)
 
+    def _reset_arm_safe(self):
+        """Ctrl+C 时尝试复位机械臂到初始姿态并张开夹爪，失败不阻断退出。"""
+        if self._arm_ctrl is not None:
+            return  # 已初始化过，复用
+        try:
+            import yaml
+            from utils.ArmController import ArmController
+            cfg = yaml.safe_load(open(self._config_path))
+            arm_cfg = {**cfg['arm'],
+                       'arm_serial_baud': cfg['hardware']['arm_serial_baud']}
+            self._arm_ctrl = ArmController(device=self._arm_port, cfg=arm_cfg)
+            self.get_logger().info("Ctrl+C 复位：机械臂回到初始姿态并张开夹爪")
+            self._arm_ctrl.open_gripper()   # 先张开，避免归位途中把物块挂到别处
+            import time
+            time.sleep(0.3)
+            self._arm_ctrl.set_pose(0)      # mode=0 初始姿态
+            time.sleep(2.5)                 # 等舵机走完初始姿态
+            self._arm_ctrl.finalize()
+        except Exception as e:
+            self.get_logger().warning(f"Ctrl+C 复位机械臂失败（非致命）: {e}")
+
     # ═══════════════════════════ 主状态机 ═══════════════════════════════════ #
 
     def _main_loop(self):
@@ -275,6 +342,7 @@ class GraspFlowNode(Node):
             self.get_logger().info(
                 "抓取完成，机械臂已切换运输姿态。请人工搬运机械狗到放置点。")
             self._drain_input()
+            self._place_triggered = False
             self._set_state(self.ST_WAIT_LETTER)
             return
         if self._grasp_state.startswith("ERROR"):
@@ -286,40 +354,45 @@ class GraspFlowNode(Node):
         self._heartbeat(f"grasp_task 抓取中（{self._grasp_state}）…")
 
     def _st_wait_letter(self):
-        if not self._enable_prompt:
-            self._heartbeat("请人工发布 /letter_place/start 触发放置对齐")
-        else:
+        # 触发条件（任一满足）：
+        #   1) 外部模块向 /grasp_flow/place_ready 发 True（未来主路径）
+        #   2) 本节点终端敲任意一行输入（回车即可，临时占位）
+        if not self._place_triggered:
+            cmd = self._poll_input()
+            if cmd is not None:
+                self.get_logger().info(
+                    "收到终端输入（临时触发），视为放置就绪信号")
+                self._place_triggered = True
+
+        if not self._place_triggered:
             self._heartbeat(
-                "搬运到位后，在此终端输入放置字母 A/B/C/D 并回车开始放置对齐"
-                "（输入 q 中止任务）")
-        cmd = self._poll_input()
-        if cmd is None:
+                f"等待放置就绪信号：向 {self._place_trigger_topic} 发 "
+                f"std_msgs/Bool data=true，或在此终端回车触发放置"
+                f"（zone={HARDCODED_LETTER}）"
+            )
             return
-        if cmd == "Q":
-            self._fail("人工中止")
-            return
-        if cmd in VALID_LETTERS:
-            self._letter = cmd
-            self.get_logger().info(f"收到放置字母 {cmd}，启动放置对齐")
-            self._spawn("letter", "letter_place_align",
-                        "letter_place_align_node", "letter_place_align.yaml")
-            # letter 节点拉起需十秒级（加载依赖+打开摄像头），触发以 2Hz
-            # 持续重发 30 秒保证到达；节点活动态会忽略重复触发，无副作用
-            self._letter_pub_until = self._now() + 30.0
-            self._grasp_result = None
-            self._set_state(self.ST_PLACING)
-        else:
-            self.get_logger().warning(f"无效输入 {cmd!r}，请输入 A/B/C/D（q 中止）")
+
+        self._letter = HARDCODED_LETTER
+        self.get_logger().info(
+            f"放置触发生效，向 grasp_task 发 /grasp/place zone={HARDCODED_LETTER}"
+        )
+        # grasp_task 的 /grasp/place 由 Event 一次锁存；但发布/订阅有短暂建链
+        # 窗口，重启后订阅可能未就绪，故 2Hz 重发 5 秒保证首条一定被吃到，
+        # 之后再收到的重复消息 grasp_task 会安全忽略
+        self._pub_grasp_place.publish(String(data=self._letter))
+        self._place_pub_until = self._now() + 5.0
+        self._last_trigger_pub = self._now()
+        self._grasp_result = None
+        self._set_state(self.ST_PLACING)
 
     def _st_placing(self):
-        if (self._now() < self._letter_pub_until
+        if (self._now() < self._place_pub_until
                 and self._now() - self._last_trigger_pub >= 0.5):
             self._last_trigger_pub = self._now()
-            self._pub_letter.publish(String(data=self._letter))
+            self._pub_grasp_place.publish(String(data=self._letter))
 
         if self._grasp_result is True:
             self.get_logger().info("放置完成，任务全流程结束 ✔")
-            self._kill("letter")
             self._set_state(self.ST_DONE)
             return
         if self._grasp_result is False or self._grasp_state.startswith("ERROR"):
@@ -327,39 +400,25 @@ class GraspFlowNode(Node):
                 else "grasp_task 放置失败（/grasp/result=False）"
             self._fail(f"{reason}；如需重试需重启 grasp_task 节点")
             return
-        if self._elapsed() > self._letter_timeout_s:
-            self._fail("放置对齐/放置超时（letter_place_align 可能未锁定目标，"
-                       "输入 r 可重新触发放置对齐）", retriable=True)
+        if self._elapsed() > self._place_timeout_s:
+            self._fail("放置超时（grasp_task 未在预期时间内报告完成）")
             return
 
-        cmd = self._poll_input()
-        if cmd == "Q":
-            # 任意非 ABCD 值会让 letter_place_align 取消回 wait_trigger
-            self._pub_letter.publish(String(data="X"))
-            self._kill("letter")
-            self._drain_input()
-            self._set_state(self.ST_WAIT_LETTER)
-            return
-        self._heartbeat(f"放置对齐/放置进行中（grasp_task: {self._grasp_state}）…")
+        self._heartbeat(f"放置进行中（grasp_task: {self._grasp_state}）…")
 
     def _st_done(self):
         self._heartbeat("任务已完成。可按 Ctrl+C 退出。", period=30.0)
 
     def _st_error(self):
-        if self._error_retriable:
-            self._heartbeat(
-                f"流程处于 ERROR（{self._error_reason}）。输入 r 重新触发放置对齐，"
-                "或 Ctrl+C 退出。")
-            if self._poll_input() == "R":
-                self._drain_input()
-                self._set_state(self.ST_WAIT_LETTER)
-        else:
-            self._heartbeat(
-                f"流程处于 ERROR（{self._error_reason}）。请排查后重启。", period=30.0)
+        self._heartbeat(
+            f"流程处于 ERROR（{self._error_reason}）。请排查后重启。", period=30.0)
 
     # ═══════════════════════════ 析构 ═══════════════════════════════════════ #
 
     def destroy_node(self):
+        # 只负责 kill 掉自己拉起的对齐子进程，机械臂复位由 grasp_task 自己的
+        # finalize() 负责——这边如果再开 ArmController 会跟 grasp_task 抢
+        # /dev/ttyUSB0 打架，反而导致夹爪没张开、舵机堵转过热。
         self._kill_all()
         super().destroy_node()
 
@@ -370,7 +429,7 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        pass
+        node.get_logger().info("收到 Ctrl+C，正在安全退出...")
     finally:
         node.destroy_node()
         if rclpy.ok():
