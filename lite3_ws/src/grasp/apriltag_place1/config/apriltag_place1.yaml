@@ -1,4 +1,7 @@
-apriltag_place1:
+# NOTE(2026-08-11): 顶层 key 必须匹配节点名（super().__init__("apriltag_place1_node")）。
+# 之前拼写成 `apriltag_place1:` 导致本文件里的所有参数（含标定后的相机内参）
+# 全都被 rclpy 忽略，代码 default 覆盖 yaml——已修复。
+apriltag_place1_node:
   ros__parameters:
     # ── 外部触发接口 ──────────────────────────────────────────────────────────
     trigger_topic: "/apriltag_place1/start"
@@ -22,23 +25,27 @@ apriltag_place1:
     target_tag_id: 0
     tag_size_m: 0.083
 
-    # ── 站位 ──────────────────────────────────────────────────────────────────
-    closed_loop_end_dist: 0.35       # 视觉闭环终点：距 tag 该距离后转开环盲进
-    # final_forward_offset = 0.47 保证最终站位与旧逻辑一致：
-    # 盲进 blind = tz_measured - closed_loop_end_dist + final_forward_offset_m，
-    # final_check 通过时 tz_measured ≈ closed_loop_end_dist，blind ≈ 0.47m
-    final_forward_offset_m: 0.47
+    # ── 站位（2026-08-11 重构：不再有 blind_forward，approach 一步走到目标距离）─
+    closed_loop_end_dist: 1.0        # 视觉闭环 approach 终点，与 tag 的目标 tz（米）
+    # final_forward_offset_m 已废弃（不再盲进），保留为 0.0 兼容旧代码引用
+    final_forward_offset_m: 0.0
 
-    # ── 对准阈值（final_check 三项同时达标判定）────────────────────────────────
+    # ── 对准阈值 ──────────────────────────────────────────────────────────────
     yaw_align_threshold_deg: 3.0
-    max_yaw_step_deg: 3.0            # yaw_align 单步旋转限幅，防惯性过冲
+    max_yaw_step_deg: 3.0            # yaw_finetune 单步旋转限幅，防惯性过冲
     lateral_threshold_m: 0.03
-    distance_threshold_m: 0.03       # 相对 closed_loop_end_dist 的到位容差
+    distance_threshold_m: 0.12       # 放宽到 12cm 应对测距噪声+pose_controller超调
 
     # ── 流程控制 ──────────────────────────────────────────────────────────────
-    stable_frames: 15              # wait_detect 瞄准滤波帧数 / final_check 连续达标帧数
-    max_rounds: 10                 # yaw/lateral/approach 各相最大修正轮次
+    stable_frames: 15              # wait_detect 瞄准滤波帧数
+    max_rounds: 10                 # lateral / approach 各阶段最大修正轮次
+    max_yaw_finetune_rounds: 5     # yaw 收尾修正最大次数（从 3 增到 5）；达到后即使仍有残余偏差也 emit 完成
     lost_tolerance_s: 2.0          # Tag 短暂丢失时沿用上次位姿的时长
     detect_timeout_s: 10.0
     cmd_vel_zero_timeout_s: 1.5      # /cmd_vel 持续为零才认为运动完成，机械狗惯性大需加长
     move_timeout_s: 10.0
+
+    # ── 横向搜索（wait_detect 超时兜底）─────────────────────────────────────
+    search_step_m: 0.10            # 每步横移距离（米），参考 block_align
+    search_max_steps: 8            # 最多搜索步数
+    search_timeout_s: 60.0         # 全局搜索超时（秒）

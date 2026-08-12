@@ -1,0 +1,47 @@
+abcd_task_node:
+  ros__parameters:
+    # ─── ABCD 配置文件（现场标定）───────────────────────────────────────
+    abcd_config_path: "/home/ysc/2026YuYaoGuoSai/lite3_ws/src/grasp/abcd_task/config/abcd_config.yaml"
+
+    # 任务顺序 & 起点（支持从任意字母开始，便于单轮/单点测试）
+    task_order: ["A", "B", "C", "D"]
+    start_from: "A"
+    skip_on_error: false        # 单字母失败是否继续下一个
+    dry_run_nav: false          # 只跑导航链路，跳过 tag_align / block_align / grasp / place
+
+    # ─── 参数：距离/超时 ───────────────────────────────────────────────
+    retreat_dist_m:          0.5
+    nav_timeout_s:           30.0
+    tag_align_timeout_s:     60.0      # 从 30s 延长到 60s（搜索+对齐+接近）
+    grasp_flow_timeout_s:    300.0
+    place_timeout_s:         120.0
+    odom_fresh_timeout_s:    1.0
+    cmd_vel_zero_duration_s: 1.0
+    inter_state_pause_s:     0.3
+    standby_wait_timeout_s:  60.0
+
+    # ─── 话题名（保持默认即可，暴露参数便于遥控/重映射）─────────────────
+    topic_apriltag_start: "/apriltag_place1/start"
+    topic_apriltag_done:  "/apriltag_place1/done"
+    topic_block_align:    "/block_align/start"
+    topic_grasp_state:    "/grasp/state"
+    topic_grasp_result:   "/grasp/result"
+    topic_grasp_place:    "/grasp/place"
+    topic_odom:           "/leg_odom2"
+    topic_cmd_vel:        "/cmd_vel"
+    topic_move:           "/move"
+    topic_pose_cmd:       "/pose_control/command"
+
+    # ─── apriltag_place1 参数服务 ─────────────────────────────────────
+    apriltag_set_param_service:      "/apriltag_place1_node/set_parameters"
+    apriltag_set_param_timeout_s:    5.0
+
+    # ─── block_align 子进程 ──────────────────────────────────────────
+    block_align_package:    "block_align"
+    block_align_executable: "block_align_node"
+    # 留空则用 get_package_share_directory('block_align')/config/block_align.yaml
+    block_align_params_file: ""
+
+    # ─── 放置命令连发窗口（覆盖订阅竞争）──────────────────────────────
+    place_signal_rate_hz:     2.0
+    place_signal_duration_s:  5.0

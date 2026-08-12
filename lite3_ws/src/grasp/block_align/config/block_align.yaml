@@ -31,3 +31,10 @@ block_align_node:
     detect_timeout_s: 15.0
     cmd_vel_zero_timeout_s: 0.5
     move_timeout_s: 10.0
+
+    # ── 横向搜索（wait_detect 超时后进入 STATE_SEARCH）─────────────────────────
+    # 方向由 lateral_polarity 反号决定：polarity=-1 时向 body +y（左）搜，
+    # 相当于 "从右往左" 扫（设计文档 §7.2）。
+    search_step_m: 0.10        # 每步横移距离（米）
+    search_max_steps: 10       # 最多步数（默认 1m 扫描范围）
+    search_timeout_s: 60.0     # 搜索阶段的整体超时兜底

@@ -1,0 +1,57 @@
+# ABCD 物块任务标定配置
+#
+# 加载方式：abcd_task_node.py 用 pyyaml 直接读取（不通过 ROS 参数系统），
+# 所以顶层格式为纯 dict，无需 `<node>: ros__parameters:` 包装。
+#
+# ─── 现场标定项 ────────────────────────────────────────────────────────
+#
+# transit_point：中转点（每轮开始与结束都回这里）
+#   - x, y   世界坐标（米），从 `/leg_odom2` 读取
+#   - yaw    机身朝向（弧度）
+#
+# letters[A/B/C/D].task_x / task_y / task_yaw：
+#   四块物块各自的"抓取/放置准备点"（同一坐标，抓与放走的是同一位置）。
+#
+# 标定推荐流程（使用 tools/way_point.py 的 record 模式）：
+#   1. 机械狗放到中转点上电，`ros2 launch pose_control ...` 让 pose_controller 起来
+#   2. 手动摇杆或键盘把狗开到 A 的准备位（正对 AprilTag，机械臂摄像头能看到色块）
+#   3. `ros2 topic echo /leg_odom2` 抓一帧，把 pose.position.x/y 抄进 A.task_x/task_y
+#   4. yaw 用四元数换算： yaw = atan2(2*q.w*q.z, q.w**2 - q.z**2)
+#      （或者用 tools/way_point.py record 直接按 S 键记录，输出的 waypoints.json
+#       里就是 x/y/yaw 三元组）
+#   5. B/C/D 同理，最后把狗开回中转点标 transit_point
+#
+# ─── AprilTag ──────────────────────────────────────────────────────────
+# 全流程只有一次 tag 对齐，发生在每字母抓取前，用同一个 tag_id（默认 0）。
+# 抓取后的放置阶段不再用 tag，靠里程计导航回 task_point。
+# 如需换 tag，改下面的 apriltag_tag_id 即可，abcd_task_node 会在启动时通过
+# /apriltag_place1_node/set_parameters 一次性下发到 apriltag_place1_node。
+
+apriltag_tag_id: 0
+
+transit_point:
+  x: 0.0
+  y: 0.0
+  yaw: 0.0
+
+letters:
+  A:
+    color: "red"
+    task_x: 0.0
+    task_y: 0.0
+    task_yaw: 0.0
+  B:
+    color: "red"
+    task_x: 0.0
+    task_y: 0.0
+    task_yaw: 0.0
+  C:
+    color: "green"
+    task_x: 0.0
+    task_y: 0.0
+    task_yaw: 0.0
+  D:
+    color: "green"
+    task_x: 0.0
+    task_y: 0.0
+    task_yaw: 0.0

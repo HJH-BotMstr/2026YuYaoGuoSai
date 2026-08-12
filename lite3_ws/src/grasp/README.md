@@ -168,37 +168,6 @@ ros2 topic pub /apriltag_place1/start std_msgs/Bool "{data: false}" --once
 
 > 注意：节点带 cv2 显示窗口，无显示环境（纯 SSH 无 X 转发）会因 imshow 崩溃。
 
-### 5. 放置对齐 letter_place_align
-
-```bash
-ros2 launch letter_place_align letter_place_align.launch.py   # 自带 pose_controller
-```
-
-```bash
-# 触发对齐（字母 A/B/C/D；transient_local 或连发 3 次二选一）
-ros2 topic pub /letter_place/start std_msgs/String "data: 'B'" --once --qos-durability transient_local --keep-alive 3
-ros2 topic pub /letter_place/start std_msgs/String "data: 'B'" -r 1 -t 3
-
-# 取消（任意非 ABCD 值）
-ros2 topic pub /letter_place/start std_msgs/String "data: 'X'" -r 1 -t 3
-```
-
-成功：状态走到 `done` 并自动发 `/grasp/place`（`ros2 topic echo /grasp/place` 验证）。
-参数在 `src/grasp/letter_place_align/config/letter_place_align.yaml`（摄像头设备、`paper_orientation`、站位参数需与 apriltag_place1 一致）。
-完成后节点停 `done` 态不可重触发，重测需重启节点。
-
-### 6. 编排器 grasp_flow（单独）
-
-```bash
-ros2 run grasp_flow grasp_flow_node
-ros2 run grasp_flow grasp_flow_node --ros-args -p apriltag_timeout_s:=300.0
-```
-
-单独跑时前提：狗驱动、pose_control、grasp_task 已在运行（编排器按状态自动推进，
-两个对齐节点由它按需拉起）。主要参数：`odom_fresh_timeout_s`、`apriltag_timeout_s`(240)、
-`grasp_timeout_s`(300)、`letter_place_timeout_s`(600)、`enable_prompt`(true)、`manage_align_nodes`(true)。
-
----
 
 ## 三、常用监视命令
 
@@ -215,148 +184,20 @@ ffplay -f v4l2 -framerate 30 -video_size 640x480 /dev/video0
 # RealSense D435i RGB（apriltag_place1 / letter_place_align 用的）
 ffplay -f v4l2 -framerate 30 -video_size 640x480 /dev/video6
 
-^C[WARNING] [launch]: user interrupted with ctrl-c (SIGINT) again, ignoring...
-[pose_control-2] Traceback (most recent call last):
-[pose_control-2]   File "/home/ysc/2026YuYaoGuoSai/lite3_ws/install/pose_control/lib/pose_control/pose_control", line 11, in <module>
-[pose_control-2]     load_entry_point('pose-control==0.0.0', 'console_scripts', 'pose_control')()
-[pose_control-2]   File "/home/ysc/2026YuYaoGuoSai/lite3_ws/install/pose_control/lib/python3.8/site-packages/pose_control/pose_controller_node.py", line 754, in main
-^C[WARNING] [launch]: user interrupted with ctrl-c (SIGINT) again, ignoring...
-^C[ERROR] [grasp_node-3]: process has died [pid 11598, exit code -2, cmd '/home/ysc/2026YuYaoGuoSai/lite3_ws/install/grasp_task/lib/grasp_task/grasp_node --ros-args -r __node:=grasp_task --params-file /home/ysc/2026YuYaoGuoSai/lite3_ws/install/grasp_task/share/grasp_task/config/grasp_task.yaml --params-file /tmp/launch_params_0f6s_ywg'].
-[WARNING] [launch]: user interrupted with ctrl-c (SIGINT) again, ignoring...
-[ERROR] [pose_control-2]: process has died [pid 11596, exit code -2, cmd '/home/ysc/2026YuYaoGuoSai/lite3_ws/install/pose_control/lib/pose_control/pose_control --ros-args -r __node:=pose_controller --params-file /tmp/launch_params_4hbjiwe_'].
-[pose_control-2] state=idle      origin=(  -0.79°)  cur=(3.016,-0.434,  -2.82°)
-cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
-state=idle      origin=(  -0.79°)  cur=(3.016,-0.434,  -2.82°)
-cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
-state=idle      origin=(  -0.79°)  cur=(3.016,-0.434,  -2.83°)
-cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
-state=idle      origin=(  -0.79°)  cur=(3.016,-0.434,  -2.84°)
-cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
-state=idle      origin=(  -0.79°)  cur=(3.016,-0.434,  -2.84°)
-cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
-state=idle      origin=(  -0.79°)  cur=(3.016,-0.434,  -2.85°)
-cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
-state=idle      origin=(  -0.79°)  cur=(3.016,-0.434,  -2.86°)
-cmd=(+0.000,+0.000,+0.0000)  rear_blocked=False rear_dist=0.60m  [idle]
-state=idle      origin=(  -0.79°)  cur=(3.016,-0.434,  -2.87°)
-cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
-state=idle      origin=(  -0.79°)  cur=(3.016,-0.434,  -2.87°)
-cmd=(+0.000,+0.000,+0.0000)  rear_blocked=True rear_dist=0.28m  [idle]
-state=moving_x  origin=(  -3.66°)  cur=(3.015,-0.433,  -0.15°)  tgt=(4.345,-0.519,   3.66°)
-cmd=(+1.100,-0.050,+0.0050)  rear_blocked=False rear_dist=0.60m  [auto]
-state=moving_x  origin=(  -3.66°)  cur=(3.164,-0.451,  -0.26°)  tgt=(4.345,-0.519,   3.66°)
-cmd=(+1.100,+0.050,+0.0069)  rear_blocked=True rear_dist=0.28m  [auto]
-state=moving_x  origin=(  -3.66°)  cur=(3.434,-0.462,  -0.28°)  tgt=(4.345,-0.519,   3.66°)
-cmd=(+1.100,+0.050,+0.0095)  rear_blocked=False rear_dist=0.51m  [auto]
-state=moving_x  origin=(  -3.66°)  cur=(3.702,-0.467,  -0.13°)  tgt=(4.345,-0.519,   3.66°)
-cmd=(+1.100,-0.050,+0.0089)  rear_blocked=False rear_dist=0.80m  [auto]
-state=moving_x  origin=(  -3.66°)  cur=(3.950,-0.494,   0.15°)  tgt=(4.345,-0.519,   3.66°)
-cmd=(+0.978,+0.050,-0.0052)  rear_blocked=False rear_dist=0.94m  [auto]
-state=moving_x  origin=(  -3.66°)  cur=(4.087,-0.462,   1.11°)  tgt=(4.345,-0.519,   3.66°)
-cmd=(+0.728,-0.084,-0.0343)  rear_blocked=False rear_dist=1.22m  [auto]
-state=moving_x  origin=(  -3.66°)  cur=(4.132,-0.484,   1.81°)  tgt=(4.345,-0.519,   3.66°)
-cmd=(+0.643,-0.050,-0.0633)  rear_blocked=False rear_dist=1.04m  [auto]
-state=moving_x  origin=(  -3.66°)  cur=(4.191,-0.519,   4.38°)  tgt=(4.345,-0.519,   3.66°)
-cmd=(+0.533,+0.050,-0.1358)  rear_blocked=False rear_dist=1.01m  [auto]
-state=moving_x  origin=(  -3.66°)  cur=(4.235,-0.538,   6.48°)  tgt=(4.345,-0.519,   3.66°)
-cmd=(+0.446,+0.050,-0.2264)  rear_blocked=False rear_dist=1.08m  [auto]
-state=moving_x  origin=(  -3.66°)  cur=(4.268,-0.543,   7.12°)  tgt=(4.345,-0.519,   3.66°)
-cmd=(+0.384,+0.057,-0.2487)  rear_blocked=False rear_dist=1.09m  [auto]
-state=moving_x  origin=(  -3.66°)  cur=(4.287,-0.541,   7.82°)  tgt=(4.345,-0.519,   3.66°)
-cmd=(+0.348,+0.051,-0.2732)  rear_blocked=False rear_dist=1.09m  [auto]
-state=moving_x  origin=(  -3.66°)  cur=(4.309,-0.519,   7.38°)  tgt=(4.345,-0.519,   3.66°)
-cmd=(+0.311,+0.050,-0.2578)  rear_blocked=False rear_dist=1.10m  [auto]
-state=moving_x  origin=(  -3.66°)  cur=(4.315,-0.499,   9.30°)  tgt=(4.345,-0.519,   3.66°)
-cmd=(+0.301,-0.050,-0.3248)  rear_blocked=False rear_dist=1.09m  [auto]
 
-[pose_control-2] Traceback (most recent call last):
-  File "/home/ysc/2026YuYaoGuoSai/lite3_ws/install/pose_control/lib/pose_control/pose_control", line 11, in <module>
-    load_entry_point('pose-control==0.0.0', 'console_scripts', 'pose_control')()
-  File "/home/ysc/2026YuYaoGuoSai/lite3_ws/install/pose_control/lib/python3.8/site-packages/pose_control/pose_controller_node.py", line 754, in main
-    node.destroy_node()
-  File "/opt/ros/foxy/lib/python3.8/site-packages/rclpy/node.py", line 1533, in destroy_node
-    self.handle.destroy()
-  File "/opt/ros/foxy/lib/python3.8/site-packages/rclpy/handle.py", line 95, in destroy
-    self.__destroy()
-  File "/opt/ros/foxy/lib/python3.8/site-packages/rclpy/handle.py", line 138, in __destroy
-    _rclpy_capsule.rclpy_pycapsule_destroy(self.__capsule)
-KeyboardInterrupt
+cd /home/ysc/2026YuYaoGuoSai/lite3_ws
+source /opt/ros/foxy/setup.bash
+colcon build --packages-select abcd_task apriltag_place1 block_align grasp_task
+source install/setup.bash
 
-[ERROR] [python3-1]: process has died [pid 11594, exit code -2, cmd 'python3 /home/ysc/2026YuYaoGuoSai/tools/lite3_driver.py'].
-[grasp_flow_node_b-4] Traceback (most recent call last):
-[grasp_flow_node_b-4]   File "/home/ysc/2026YuYaoGuoSai/lite3_ws/install/grasp_flow/lib/python3.8/site-packages/grasp_flow/grasp_flow_node_b.py", line 392, in main
-[grasp_flow_node_b-4]     rclpy.spin(node)
-[grasp_flow_node_b-4]   File "/opt/ros/foxy/lib/python3.8/site-packages/rclpy/__init__.py", line 191, in spin
-[grasp_flow_node_b-4]   File "/opt/ros/foxy/lib/python3.8/site-packages/rclpy/executors.py", line 717, in spin_once
-[grasp_flow_node_b-4]     handler()
-[grasp_flow_node_b-4]   File "/opt/ros/foxy/lib/python3.8/site-packages/rclpy/task.py", line 239, in __call__
-[grasp_flow_node_b-4]     self._handler.send(None)
-[grasp_flow_node_b-4]   File "/opt/ros/foxy/lib/python3.8/site-packages/rclpy/executors.py", line 422, in handler
-[grasp_flow_node_b-4]     arg = take_from_wait_list(entity)
-[grasp_flow_node_b-4]   File "/opt/ros/foxy/lib/python3.8/site-packages/rclpy/executors.py", line 347, in _take_subscription
-[grasp_flow_node_b-4]     msg_info = _rclpy.rclpy_take(capsule, sub.msg_type, sub.raw)
-[grasp_flow_node_b-4]   File "/opt/ros/foxy/lib/python3.8/site-packages/geometry_msgs/msg/_pose_with_covariance.py", line 77, in __init__
-[grasp_flow_node_b-4]     def __init__(self, **kwargs):
-[grasp_flow_node_b-4] KeyboardInterrupt
-[grasp_flow_node_b-4] 
-[grasp_flow_node_b-4] During handling of the above exception, another exception occurred:
-[grasp_flow_node_b-4] 
-[grasp_flow_node_b-4] Traceback (most recent call last):
-[grasp_flow_node_b-4]   File "/home/ysc/2026YuYaoGuoSai/lite3_ws/install/grasp_flow/lib/python3.8/site-packages/grasp_flow/grasp_flow_node_b.py", line 394, in main
-[grasp_flow_node_b-4]     node.get_logger().info("收到 Ctrl+C，正在安全退出...")
-[grasp_flow_node_b-4]   File "/opt/ros/foxy/lib/python3.8/site-packages/rclpy/impl/rcutils_logger.py", line 334, in info
-[grasp_flow_node_b-4]     return self.log(message, LoggingSeverity.INFO, **kwargs)
-[grasp_flow_node_b-4]   File "/opt/ros/foxy/lib/python3.8/site-packages/rclpy/impl/rcutils_logger.py", line 290, in log
-[grasp_flow_node_b-4]     caller_id = CallerId()
-[grasp_flow_node_b-4]   File "/opt/ros/foxy/lib/python3.8/site-packages/rclpy/impl/rcutils_logger.py", line 58, in __new__
-[grasp_flow_node_b-4]     frame = _find_caller(inspect.currentframe())
-[grasp_flow_node_b-4]   File "/opt/ros/foxy/lib/python3.8/site-packages/rclpy/impl/rcutils_logger.py", line 49, in _find_caller
-[grasp_flow_node_b-4]     file_path = os.path.realpath(inspect.getframeinfo(frame).filename)
-[grasp_flow_node_b-4]   File "/usr/lib/python3.8/posixpath.py", line 391, in realpath
-[grasp_flow_node_b-4]     path, ok = _joinrealpath(filename[:0], filename, {})
-[grasp_flow_node_b-4]   File "/usr/lib/python3.8/posixpath.py", line 425, in _joinrealpath
-[grasp_flow_node_b-4]     if not islink(newpath):
-[grasp_flow_node_b-4]   File "/usr/lib/python3.8/posixpath.py", line 167, in islink
-[grasp_flow_node_b-4]     st = os.lstat(path)
-[grasp_flow_node_b-4] KeyboardInterrupt
-[grasp_flow_node_b-4] 
-[grasp_flow_node_b-4] During handling of the above exception, another exception occurred:
-[grasp_flow_node_b-4] 
-[grasp_flow_node_b-4] Traceback (most recent call last):
-[grasp_flow_node_b-4]   File "/usr/lib/python3.8/subprocess.py", line 1083, in wait
-[grasp_flow_node_b-4]     return self._wait(timeout=timeout)
-[grasp_flow_node_b-4]   File "/usr/lib/python3.8/subprocess.py", line 1800, in _wait
-[grasp_flow_node_b-4]     time.sleep(delay)
-[grasp_flow_node_b-4] KeyboardInterrupt
-[grasp_flow_node_b-4] 
-[grasp_flow_node_b-4] During handling of the above exception, another exception occurred:
-[grasp_flow_node_b-4] 
-[grasp_flow_node_b-4] Traceback (most recent call last):
-[grasp_flow_node_b-4]   File "/home/ysc/2026YuYaoGuoSai/lite3_ws/install/grasp_flow/lib/grasp_flow/grasp_flow_node_b", line 11, in <module>
-[grasp_flow_node_b-4]     load_entry_point('grasp-flow==0.1.0', 'console_scripts', 'grasp_flow_node_b')()
-[grasp_flow_node_b-4]   File "/home/ysc/2026YuYaoGuoSai/lite3_ws/install/grasp_flow/lib/python3.8/site-packages/grasp_flow/grasp_flow_node_b.py", line 396, in main
-[grasp_flow_node_b-4]     node.destroy_node()
-[grasp_flow_node_b-4]   File "/home/ysc/2026YuYaoGuoSai/lite3_ws/install/grasp_flow/lib/python3.8/site-packages/grasp_flow/grasp_flow_node_b.py", line 383, in destroy_node
-[grasp_flow_node_b-4]     self._kill_all()
-[grasp_flow_node_b-4]   File "/home/ysc/2026YuYaoGuoSai/lite3_ws/install/grasp_flow/lib/python3.8/site-packages/grasp_flow/grasp_flow_node_b.py", line 231, in _kill_all
-[grasp_flow_node_b-4]     self._kill(key)
-[grasp_flow_node_b-4]   File "/home/ysc/2026YuYaoGuoSai/lite3_ws/install/grasp_flow/lib/python3.8/site-packages/grasp_flow/grasp_flow_node_b.py", line 221, in _kill
-[grasp_flow_node_b-4]     proc.wait(timeout=5.0)
-[grasp_flow_node_b-4]   File "/usr/lib/python3.8/subprocess.py", line 1096, in wait
-[grasp_flow_node_b-4]     self._wait(timeout=sigint_timeout)
-[grasp_flow_node_b-4]   File "/usr/lib/python3.8/subprocess.py", line 1800, in _wait
-[grasp_flow_node_b-4]     time.sleep(delay)
-[grasp_flow_node_b-4] KeyboardInterrupt
-^C[WARNING] [launch]: user interrupted with ctrl-c (SIGINT) again, ignoring...
-[ERROR] [grasp_flow_node_b-4]: process has died [pid 11600, exit code -2, cmd '/home/ysc/2026YuYaoGuoSai/lite3_ws/install/grasp_flow/lib/grasp_flow/grasp_flow_node_b --ros-args -r __node:=grasp_flow_node_b'].
-^C[WARNING] [launch]: user interrupted with ctrl-c (SIGINT) again, ignoring...
-^C[WARNING] [launch]: user interrupted with ctrl-c (SIGINT) again, ignoring...
-[ERROR] [grasp_node-3]: process[grasp_node-3] failed to terminate '5' seconds after receiving 'SIGINT', escalating to 'SIGTERM'
-[ERROR] [grasp_node-3]: process[grasp_node-3] failed to terminate '10.0' seconds after receiving 'SIGTERM', escalating to 'SIGKILL'
-^C[WARNING] [launch]: user interrupted with ctrl-c (SIGINT) again, ignoring...
-^C[WARNING] [launch]: user interrupted with ctrl-c (SIGINT) again, ignoring...
-^C[WARNING] [launch]: user interrupted with ctrl-c (SIGINT) again, ignoring...
-^C[WARNING] [launch]: user interrupted with ctrl-c (SIGINT) again, ignoring...
+# 全流程（ABCD 四轮）
+ros2 launch abcd_task abcd_task.launch.py
 
+# 仅测导航链路（不接机械臂/视觉）
+ros2 launch abcd_task abcd_task.launch.py dry_run:=true dry_run_nav:=true
 
+# 从 C 开始（跳过 AB）
+ros2 launch abcd_task abcd_task.launch.py start_from:=C max_rounds:=2
 
+# 单字母测试
+ros2 launch abcd_task abcd_task.launch.py start_from:=A max_rounds:=1

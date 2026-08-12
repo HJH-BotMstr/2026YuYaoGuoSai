@@ -22,6 +22,20 @@ arm:
   grasp_retry_max: 3                  # 抓取失败最大重试次数
   wait_position_timeout: 5.0          # 等待舵机到位超时（秒）
   wait_position_threshold: 30         # 到位判定容差（舵机脉冲值，约 ±3°）
+  # ── 夹爪堵转修复占位（设计文档 §8.2，2026-08-11 暂未接入 consumer）──
+  # 语义规划（后续由 grasp_node.finalize / 抓取失败重试路径读取）：
+  #   gripper_release_torque: 放置/失败后写入舵机 Max_Torque_Limit 的目标值，
+  #                            0 代表完全断力矩，避免长期施力导致舵机过热。
+  #   gripper_open_timeout_s: open_gripper 之后等待夹爪到位的最长时间，
+  #                            超时不阻塞后续 emergency_stop。
+  gripper_release_torque: 0
+  gripper_open_timeout_s: 2.0
+  # ── 堵转防护占位（NOTE 2026-08-11）：设计文档 §8.2 预留的两个参数，
+  # 当前 grasp_task.finalize() 未消费；后续做完整的 gripper_release 机制时
+  # 再对接。留此占位便于统一维护。目前实际保护：finalize() 内已在
+  # SIGINT/SIGTERM 保护窗口里执行 open_gripper→set_pose(0)→emergency_stop
+  gripper_release_torque: 0           # 放置/失败后目标力矩（0 = 完全断力矩）
+  gripper_open_timeout_s: 2.0         # open_gripper 最长等待
 
 detection:
   # 机械臂摄像头内参 [TODO: 现场标定] 用 tools_box/camera_params/camera_params.py 重新标定

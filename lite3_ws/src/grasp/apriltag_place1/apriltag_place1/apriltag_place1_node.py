@@ -1,26 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-AprilTag place1 对齐节点（分相闭环模式，策略与 letter_place_align 对齐）
+AprilTag place1 对齐节点（2D 主策略：横向 → 前后 → yaw 收尾微调）
 
-流程：
+流程（2026-08-11 重构）：
   phase_0_wait_trigger  等待外部触发 /apriltag_place1/start (Bool)
   phase_1_wait_detect   多帧稳定检测目标 Tag，取中位数位姿作为对齐起点（狗不动）
-  phase_2_yaw_align     旋转机身，消除水平角偏差（单步限幅 max_yaw_step_deg）
-  phase_3_lateral_align 横向平移，使 Tag 正对摄像头
-  phase_4_approach      前进到 closed_loop_end_dist（视觉闭环距离下限）
-  phase_5_final_check   最终校验（角度 + 横向 + 距离同时达标，连续 stable_frames 帧）
-  phase_6_blind_forward 开环盲进 blind = tz_measured - closed_loop_end_dist + final_forward_offset_m
-  phase_7_emit_signal   发布 /grasp/start (Bool)，通知 grasp 模块抓取
+  phase_2_lateral_align 横向平移，使 Tag 正对摄像头（|tx| ≤ lateral_threshold_m）
+  phase_3_approach      前进到 closed_loop_end_dist（默认 1.4m，视觉闭环）
+  phase_4_yaw_finetune  最多 max_yaw_finetune_rounds 次（默认 3）yaw 微调；
+                        达标或用尽次数都直接完成——yaw 残余偏差不视为失败
+  phase_5_emit_signal   发布 /grasp/start (Bool) 与 /apriltag_place1/done (Bool)
 
-对齐控制策略自 2026-08-03 起改为与 letter_place_align_node.py 同源：
-原「瞄准-一步走-复核」（aim_go 一次性合成运动 + verify 欠驱动修正）替换为
-分相闭环（每相单自由度运动 → 停稳重检测 → 再决策），差异仅保留在：
-  · 检测层：pupil_apriltags 直接解算 6DoF 位姿（tx/ty/tz 来自 pose_t）
-  · 触发/完成信号均为 Bool（/apriltag_place1/start、/grasp/start）
-  · 盲进公式：blind = tz_measured - closed_loop_end_dist + final_forward_offset_m，
-    final_check 通过时 tz_measured ≈ closed_loop_end_dist，故 blind ≈ final_forward_offset_m，
-    与旧逻辑的末端站位一致
+设计要点：
+  - 策略参考 block_align_node：2D 主对齐（横向 + 前后），最后再做 yaw 收尾
+  - yaw_finetune 用尽次数即使有残余偏差也 emit 完成，不打断上层 abcd_task 流程
+  - 去掉了旧的 final_check（三轴同时达标）与 blind_forward（开环 0.47m）阶段，
+    合并到 approach 一步走到 1.4m
+  - 检测层仍用 pupil_apriltags 解算 6DoF 位姿（tx/ty/tz 来自 pose_t）
+  - 短暂丢失（<lost_tolerance_s）沿用最近位姿，超时后视为真丢失
 
 依赖：
   - pupil-apriltags  (pip3 install pupil-apriltags)
@@ -40,18 +38,32 @@ import numpy as np
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Pose2D, Twist
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool, String
 
+
+# TRANSIENT_LOCAL：晚订阅的节点也能收到最后一条 done 信号，避免 abcd_task
+# 状态机切到 WAIT_APRILTAG_DONE 时错过瞬时消息。
+_LATCHED_QOS = QoSProfile(
+    depth=1,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    reliability=ReliabilityPolicy.RELIABLE,
+)
+
+
 # ─── 状态常量 ───────────────────────────────────────────────────────────────── #
+# 2026-08-11 重构：改用 block_align 风格的 2D 策略——
+#   先 lateral_align（横向），再 approach（前后到 1.4m），最后 yaw_finetune（3 次内）。
+# 去掉了原有的 final_check（三轴同时达标）与 blind_forward（开环盲进 0.47m）阶段。
+# yaw 微调即使未达标也不视为失败，直接 emit 抓取信号（对上层是 tag_align 完成）。
 STATE_WAIT_TRIGGER   = "wait_trigger"
 STATE_WAIT_DETECT    = "wait_detect"
-STATE_YAW_ALIGN      = "yaw_align"
+STATE_SEARCH         = "search"           # 横向搜索兜底
 STATE_LATERAL_ALIGN  = "lateral_align"
 STATE_APPROACH       = "approach"
-STATE_FINAL_CHECK    = "final_check"
-STATE_BLIND_FORWARD  = "blind_forward"
+STATE_YAW_FINETUNE   = "yaw_finetune"    # 原 yaw_align 语义变化：改为 approach 之后的收尾修正
 STATE_DONE           = "done"
 STATE_ERROR          = "error"
 
@@ -77,18 +89,31 @@ class AprilTagPlace1Node(Node):
         self.declare_parameter("tag_family",              "tag25h9")
         self.declare_parameter("target_tag_id",           0)
         self.declare_parameter("tag_size_m",              0.083)
-        self.declare_parameter("closed_loop_end_dist",    0.35)
-        self.declare_parameter("final_forward_offset_m",  0.15)
+        # closed_loop_end_dist：approach 完成后距离 Tag 的目标 tz（米）。
+        # 2026-08-11 重构：从旧的 0.35m + blind_forward 0.47m 合并为一步走到 1.4m。
+        # 1.4m 处 tag_size=0.083 仍能稳定识别，且对上层 abcd_task 后续 block_align
+        # 的机械臂视野接近距离更合适。
+        self.declare_parameter("closed_loop_end_dist",    1.4)
+        # final_forward_offset_m 已废弃（不再有 blind_forward），保留声明以便向后
+        # 兼容旧的 yaml 文件——载入后不再使用。
+        self.declare_parameter("final_forward_offset_m",  0.0)
         self.declare_parameter("yaw_align_threshold_deg", 3.0)
         self.declare_parameter("max_yaw_step_deg",        3.0)
         self.declare_parameter("lateral_threshold_m",     0.03)
         self.declare_parameter("distance_threshold_m",    0.03)
         self.declare_parameter("max_rounds",              10)
+        # yaw 微调最大次数：达到即使仍有角度偏差也直接 emit + done（不视为失败）。
+        # 独立于 max_rounds（后者管 lateral/approach）。
+        self.declare_parameter("max_yaw_finetune_rounds", 3)
         self.declare_parameter("stable_frames",           15)
         self.declare_parameter("lost_tolerance_s",        2.0)
         self.declare_parameter("detect_timeout_s",        10.0)
         self.declare_parameter("cmd_vel_zero_timeout_s",  1.5)
         self.declare_parameter("move_timeout_s",          10.0)
+        # 搜索参数（检测超时后横向搜索兜底）
+        self.declare_parameter("search_step_m",           0.10)   # 每步 10cm
+        self.declare_parameter("search_max_steps",        5)      # 最多 5 步（±50cm）
+        self.declare_parameter("search_timeout_s",        30.0)   # 搜索总超时
 
         # ── 读取参数 ────────────────────────────────────────────────────────── #
         self._trigger_topic      = self.get_parameter("trigger_topic").value
@@ -108,17 +133,21 @@ class AprilTagPlace1Node(Node):
         self._target_tag_id      = self.get_parameter("target_tag_id").value
         self._tag_size_m         = self.get_parameter("tag_size_m").value
         self._closed_loop_end    = self.get_parameter("closed_loop_end_dist").value
-        self._final_fwd_offset   = self.get_parameter("final_forward_offset_m").value
+        self._final_fwd_offset   = self.get_parameter("final_forward_offset_m").value  # 已废弃，保留占位
         self._yaw_thr_deg        = self.get_parameter("yaw_align_threshold_deg").value
         self._max_yaw_step_deg   = self.get_parameter("max_yaw_step_deg").value
         self._lat_thr            = self.get_parameter("lateral_threshold_m").value
         self._dist_thr           = self.get_parameter("distance_threshold_m").value
         self._max_rounds         = self.get_parameter("max_rounds").value
+        self._max_yaw_finetune   = int(self.get_parameter("max_yaw_finetune_rounds").value)
         self._stable_frames      = self.get_parameter("stable_frames").value
         self._lost_tolerance     = self.get_parameter("lost_tolerance_s").value
         self._detect_timeout     = self.get_parameter("detect_timeout_s").value
         self._cmdvel_zero_t      = self.get_parameter("cmd_vel_zero_timeout_s").value
         self._move_timeout       = self.get_parameter("move_timeout_s").value
+        self._search_step_m      = self.get_parameter("search_step_m").value
+        self._search_max_steps   = int(self.get_parameter("search_max_steps").value)
+        self._search_timeout_s   = self.get_parameter("search_timeout_s").value
 
         # ── 内参便捷提取 ────────────────────────────────────────────────────── #
         self._fx = float(self._cam_mtx[0, 0])
@@ -166,6 +195,10 @@ class AprilTagPlace1Node(Node):
         self._pub_move    = self.create_publisher(Pose2D,  "/move",                 10)
         self._pub_cmd     = self.create_publisher(String,  "/pose_control/command", 10)
         self._pub_grasp   = self.create_publisher(Bool,    "/grasp/start",          10)
+        # /apriltag_place1/done：Tag 对齐完成信号（专用），供上层编排（abcd_task）
+        # 与 /grasp/start（供 grasp_task 触发抓取，与 block_align 共享）区分。
+        # TRANSIENT_LOCAL 让晚订阅也能拿到最后一条 True。
+        self._pub_done    = self.create_publisher(Bool,    "/apriltag_place1/done", _LATCHED_QOS)
 
         # ── 状态 ─────────────────────────────────────────────────────────────── #
         self._state         = STATE_WAIT_TRIGGER
@@ -174,12 +207,10 @@ class AprilTagPlace1Node(Node):
 
         # 分相闭环状态
         self._last_pose       = None     # 各相位姿（wait_detect 中位数 / 停稳后重检测）
-        self._yaw_rounds      = 0
+        self._yaw_rounds      = 0        # yaw_finetune 已用次数
         self._lat_rounds      = 0
         self._app_rounds      = 0
         self._phase_busy      = False
-        self._blind_dist      = 0.0
-        self._blind_started   = False
 
         # 位姿缓存（短暂丢失容忍）
         self._last_valid_pose = None
@@ -189,14 +220,14 @@ class AprilTagPlace1Node(Node):
         self._cmdvel_history: deque = deque(maxlen=30)
 
         # 运动链路诊断
-        self._last_cmdvel_time = 0.0
+        self._last_cmdvel_time = time.monotonic()  # 初始化为当前时间，避免启动时误报超时
         self._cmdvel_received_count = 0
         self._cmdvel_motion_started = False
         self._last_move_time = 0.0
         self._move_ignored_warned = False
 
         # 里程计诊断
-        self._last_legodom_time = 0.0
+        self._last_legodom_time = time.monotonic()  # 初始化为当前时间，避免启动时误报超时
         self._legodom_received_count = 0
 
         # 节流心跳日志（key → 上次输出时间）
@@ -204,6 +235,11 @@ class AprilTagPlace1Node(Node):
 
         # phase_1 诊断统计
         self._reset_detect_stats()
+
+        # 搜索状态
+        self._search_steps_done = 0
+        self._search_deadline = float("inf")
+        self._settle_tracker_ready = False  # 搜索后停下重建 tracker 的标志
 
         # 主循环定时器：10 Hz
         self._timer = self.create_timer(0.1, self._main_loop)
@@ -313,7 +349,24 @@ class AprilTagPlace1Node(Node):
         with self._lock:
             if msg.data:
                 if self._state in (STATE_WAIT_TRIGGER, STATE_ERROR):
-                    self.get_logger().info("收到触发信号，进入 wait_detect")
+                    # 每次触发前重读 target_tag_id，支持运行时热更新
+                    # （abcd_task 通过 rcl_interfaces/SetParameters 修改此参数）
+                    try:
+                        new_tag_id = int(self.get_parameter("target_tag_id").value)
+                    except Exception as e:
+                        self.get_logger().warning(
+                            f"读取 target_tag_id 失败，沿用旧值 {self._target_tag_id}: {e}"
+                        )
+                        new_tag_id = self._target_tag_id
+                    if new_tag_id != self._target_tag_id:
+                        self.get_logger().info(
+                            f"target_tag_id 切换: {self._target_tag_id} -> {new_tag_id}"
+                        )
+                        self._target_tag_id = new_tag_id
+
+                    self.get_logger().info(
+                        f"收到触发信号，进入 wait_detect，target_tag_id={self._target_tag_id}"
+                    )
                     self._state = STATE_WAIT_DETECT
                     self._stable_buf.clear()
                     self._reset_detect_stats()
@@ -453,11 +506,25 @@ class AprilTagPlace1Node(Node):
         self.get_logger().info("发布 reset_origin")
 
     def _emit_place1(self):
-        """phase_7：发布 /grasp/start = Bool(True)，通知 grasp 模块抓取。"""
+        """phase_7：发布对齐完成信号。
+
+        修复 2026-08-12：只发 /apriltag_place1/done，不再发 /grasp/start。
+        新流程：apriltag → abcd_task 拉起 block_align → block_align 完成后发 /grasp/start。
+
+        旧问题：apriltag_place1 和 block_align 同时发 /grasp/start，导致：
+          1. grasp_node 抢先被触发，打开摄像头开始检测
+          2. block_align_node 无法获取摄像头（被占用）
+          3. block_align 的横向搜索功能无法执行
+
+        新方案：apriltag_place1 只负责 AprilTag 对齐，完成后通知 abcd_task；
+        abcd_task 拉起 block_align 进行色块对齐+搜索，block_align 完成后触发 grasp_task。
+        """
         msg = Bool()
         msg.data = True
-        self._pub_grasp.publish(msg)
-        self.get_logger().info("发布 /grasp/start = True")
+        # 不再发布 /grasp/start，由 block_align 接管触发 grasp_task
+        # self._pub_grasp.publish(msg)
+        self._pub_done.publish(msg)
+        self.get_logger().info("发布 /apriltag_place1/done = True (不发 /grasp/start，由 block_align 接管)")
 
     # ──────────────────────────── 运动完成判断 ──────────────────────────────── #
 
@@ -549,10 +616,6 @@ class AprilTagPlace1Node(Node):
         if state == STATE_ERROR:
             return
 
-        if state == STATE_BLIND_FORWARD:
-            self._do_blind_forward()
-            return
-
         # 以下阶段需要摄像头，先确保摄像头就绪（含采集线程判定的掉线）
         if self._cap is None or self._cap_dead:
             self.get_logger().warning("摄像头未就绪，尝试重新打开")
@@ -569,14 +632,14 @@ class AprilTagPlace1Node(Node):
 
         if state == STATE_WAIT_DETECT:
             self._do_wait_detect(frame)
-        elif state == STATE_YAW_ALIGN:
-            self._do_yaw_align(frame)
+        elif state == STATE_SEARCH:
+            self._do_search(frame)
         elif state == STATE_LATERAL_ALIGN:
             self._do_lateral_align(frame)
         elif state == STATE_APPROACH:
             self._do_approach(frame)
-        elif state == STATE_FINAL_CHECK:
-            self._do_final_check(frame)
+        elif state == STATE_YAW_FINETUNE:
+            self._do_yaw_finetune(frame)
 
     # ──────────────────────────── phase_1 ───────────────────────────────────── #
 
@@ -584,16 +647,32 @@ class AprilTagPlace1Node(Node):
         self._detect_frames += 1
         if time.monotonic() > self._detect_deadline:
             ids_str = f" 最近一次 IDs={self._last_detected_tag_ids}" if self._last_detected_tag_ids else ""
-            self.get_logger().error(
-                f"phase_1 超时，未检测到 Tag id={self._target_tag_id}。诊断："
+            self.get_logger().warning(
+                f"wait_detect 超时（{self._detect_timeout:.1f}s），进入横向搜索。诊断："
                 f"已处理 {self._detect_frames} 帧，"
                 f"检测到任意 Tag 的帧 {self._detect_any_tags_frames} 次{ids_str}，"
                 f"检测到目标 ID 的帧 {self._detect_target_frames} 次，"
-                f"稳定缓冲 {len(self._stable_buf)}/{self._stable_frames}，"
-                f"回到 wait_trigger"
+                f"稳定缓冲 {len(self._stable_buf)}/{self._stable_frames}"
             )
+            # 进入横向搜索
+            ready, issues = self._check_motion_pipeline()
+            if not ready:
+                self.get_logger().error(
+                    f"运动链路未就绪，无法搜索：{'; '.join(issues)}")
+                with self._lock:
+                    self._state = STATE_ERROR
+                return
             with self._lock:
-                self._state = STATE_WAIT_TRIGGER
+                self._state = STATE_SEARCH
+                self._search_steps_done = 0
+                self._phase_busy = False
+                self._settle_tracker_ready = False
+                per_step_budget = self._move_timeout + 1.0
+                self._search_deadline = time.monotonic() + min(
+                    self._search_timeout_s,
+                    self._search_max_steps * per_step_budget + 5.0,
+                )
+                self._stable_buf.clear()
             return
 
         pose = self._detect_tag(frame)
@@ -608,12 +687,12 @@ class AprilTagPlace1Node(Node):
             return
 
         if self._is_stable(pose):
-            # 滤波收敛 → 取缓冲中位数作为对齐起点，进入分相闭环
+            # 滤波收敛 → 取缓冲中位数作为对齐起点，进入 2D 对齐（横向 → 前后 → yaw 微调）
             tx = float(np.median([p["tx"] for p in self._stable_buf]))
             tz = float(np.median([p["tz"] for p in self._stable_buf]))
             alpha = math.degrees(math.atan2(tx, tz))
             self.get_logger().info(
-                f"瞄准锁定: tx={tx:.3f}m tz={tz:.3f}m alpha={alpha:.2f}°，进入 yaw_align"
+                f"瞄准锁定: tx={tx:.3f}m tz={tz:.3f}m alpha={alpha:.2f}°，进入 lateral_align"
             )
             with self._lock:
                 self._last_pose  = {"tx": tx, "tz": tz}
@@ -621,76 +700,78 @@ class AprilTagPlace1Node(Node):
                 self._lat_rounds = 0
                 self._app_rounds = 0
                 self._stable_buf.clear()
-                self._state = STATE_YAW_ALIGN
-                self._phase_busy = False
-
-    # ──────────────────────────── phase_2 ───────────────────────────────────── #
-
-    def _do_yaw_align(self, frame: np.ndarray):
-        if getattr(self, "_phase_busy", False):
-            if not self._is_cmd_vel_zero():
-                if self._heartbeat("motion_wait", 2.0):
-                    self.get_logger().info("yaw_align: 等待旋转运动停止…")
-                return
-            # 运动停止，重新检测
-            pose = self._detect_tag(frame)
-            if pose is None:
-                self._fallback_to_wait_detect("yaw_align")
-                return
-            self._last_pose = pose
-            self._phase_busy = False
-
-        pose  = self._last_pose
-        tx, tz = pose["tx"], pose["tz"]
-        if tz <= 0.0:
-            self.get_logger().warning(f"yaw_align: tz={tz:.3f} 异常，跳过")
-            return
-
-        alpha_rad = math.atan2(tx, tz)
-        alpha_deg = math.degrees(alpha_rad)
-
-        if abs(alpha_deg) <= self._yaw_thr_deg:
-            self.get_logger().info(f"yaw_align 完成: alpha={alpha_deg:.2f}°")
-            with self._lock:
-                self._stable_buf.clear()
                 self._state = STATE_LATERAL_ALIGN
                 self._phase_busy = False
-            return
 
-        if self._yaw_rounds >= self._max_rounds:
+    # ──────────────────────────── 横向搜索兜底 ─────────────────────────────── #
+
+    def _do_search(self, frame: np.ndarray):
+        """横向搜索：每步 search_step_m，最多 search_max_steps 步。
+        每步停下后重新检测，检测到目标则进入 lateral_align。
+        """
+        now = time.monotonic()
+
+        # 全局搜索超时
+        if now > self._search_deadline:
             self.get_logger().error(
-                f"yaw_align 超过最大轮次，放弃。最终 alpha={alpha_deg:.2f}°，"
-                f"tx={tx:.3f}m tz={tz:.3f}m。请检查机器人是否实际响应 /cmd_vel。"
-            )
+                f"search 超时（>{int(self._search_timeout_s)}s），未找到 Tag id={self._target_tag_id}")
             with self._lock:
                 self._state = STATE_ERROR
             return
 
-        # 首次发送运动指令前检查运动链路
-        if self._yaw_rounds == 0:
-            ready, issues = self._check_motion_pipeline()
-            if not ready:
-                self.get_logger().error(
-                    "运动链路未就绪，无法执行 yaw_align：" + "；".join(issues) +
-                    "。请确认已启动 pose_controller 且 /leg_odom2 有数据。"
-                )
-                with self._lock:
-                    self._state = STATE_ERROR
+        # 步数用尽
+        if self._search_steps_done >= self._search_max_steps:
+            self.get_logger().error(
+                f"search 步数用尽（{self._search_max_steps} 步 × {self._search_step_m:.2f}m），未找到 Tag")
+            with self._lock:
+                self._state = STATE_ERROR
+            return
+
+        # 正在运动中：等 cmd_vel 归零后再检测
+        if self._phase_busy:
+            if not self._is_cmd_vel_zero():
+                return
+            # 运动停止：重建稳定缓冲
+            if not self._settle_tracker_ready:
+                self._stable_buf.clear()
+                self._settle_tracker_ready = True
+
+            pose = self._detect_tag(frame)
+            if pose is None:
+                return  # 本帧未检测到，继续等下一帧
+
+            # 检测到目标：累积到稳定缓冲
+            if not pose["raw"].get("fresh", False):
                 return
 
-        self._yaw_rounds += 1
-        # 单次旋转不超过 max_yaw_step_deg，避免惯性冲过头
-        theta_cmd = -max(min(alpha_deg, self._max_yaw_step_deg), -self._max_yaw_step_deg)
-        self.get_logger().info(
-            f"yaw_align 轮次 {self._yaw_rounds}: alpha={alpha_deg:.2f}°，"
-            f"发送旋转指令 theta={theta_cmd:.2f}°")
-        self._reset_origin()
-        time.sleep(0.15)  # 等待 reset_origin 在 pose_controller 中先处理，避免 /move 被清空
-        # ROS 约定：theta 逆时针为正，目标偏右(alpha>0)需要狗向右转(负)
-        self._send_move(0.0, 0.0, theta_cmd)
-        self._phase_busy = True
+            if self._is_stable(pose):
+                tx = float(np.median([p["tx"] for p in self._stable_buf]))
+                tz = float(np.median([p["tz"] for p in self._stable_buf]))
+                self.get_logger().info(
+                    f"search 第 {self._search_steps_done} 步命中: tx={tx:.3f}m tz={tz:.3f}m")
+                with self._lock:
+                    self._last_pose  = {"tx": tx, "tz": tz}
+                    self._lat_rounds = 0
+                    self._app_rounds = 0
+                    self._yaw_rounds = 0
+                    self._phase_busy = False
+                    self._settle_tracker_ready = False
+                    self._stable_buf.clear()
+                    self._state = STATE_LATERAL_ALIGN
+                return
+            # 缓冲未满，继续累积
+            return
 
-    # ──────────────────────────── phase_3 ───────────────────────────────────── #
+        # 空闲：发下一步搜索指令（向右搜索，y 负方向）
+        y_move = -self._search_step_m
+        self._search_steps_done += 1
+        self.get_logger().info(
+            f"search 步 {self._search_steps_done}/{self._search_max_steps}: 发 /move y={y_move:.3f}m")
+        self._send_move(0.0, y_move, 0.0)
+        self._phase_busy = True
+        self._settle_tracker_ready = False
+
+    # ──────────────────────────── phase_2：横向对齐 ───────────────────────── #
 
     def _do_lateral_align(self, frame: np.ndarray):
         if getattr(self, "_phase_busy", False):
@@ -698,6 +779,8 @@ class AprilTagPlace1Node(Node):
                 if self._heartbeat("motion_wait", 2.0):
                     self.get_logger().info("lateral_align: 等待横移运动停止…")
                 return
+            # 运动停止：重建 tracker（清空缓冲，下一帧重新检测）
+            self._stable_buf.clear()
             pose = self._detect_tag(frame)
             if pose is None:
                 self._fallback_to_wait_detect("lateral_align")
@@ -723,25 +806,29 @@ class AprilTagPlace1Node(Node):
             return
 
         self._lat_rounds += 1
+        # 限幅：单次横移最大 10cm，防止晃出视野（参考 block_align 小步策略）
+        y_move = -tx  # tx 右正 → y 左正，取负
+        y_move = max(-0.10, min(0.10, y_move))
         self.get_logger().info(
-            f"lateral_align 轮次 {self._lat_rounds}: tx={tx:.3f}m，发送横移指令")
-        # /move y 正方向为左移；tx 相机坐标右正，故取负
-        self._send_move(0.0, -tx, 0.0)
+            f"lateral_align 轮次 {self._lat_rounds}: tx={tx:.3f}m → y_move={y_move:.3f}m（限幅±10cm）")
+        self._send_move(0.0, y_move, 0.0)
         self._phase_busy = True
 
-    # ──────────────────────────── phase_4 ───────────────────────────────────── #
+    # ──────────────────────────── phase_3：前后逼近 ───────────────────────── #
 
     def _do_approach(self, frame: np.ndarray):
-        """视觉闭环逼近，直到 tz ≈ closed_loop_end_dist。
+        """视觉闭环逼近，直到 tz ≈ closed_loop_end_dist（默认 1.0m）。
 
-        Tag 在 closed_loop_end_dist 以内解算误差增大，视觉闭环到此为止；
-        剩余距离由 phase_6 开环盲进完成。
+        2026-08-11 重构：不再有后续的 blind_forward，approach 完成后直接进入
+        yaw_finetune（最多 5 次），yaw 修正即使未达标也 emit 抓取信号。
         """
         if getattr(self, "_phase_busy", False):
             if not self._is_cmd_vel_zero():
                 if self._heartbeat("motion_wait", 2.0):
                     self.get_logger().info("approach: 等待前进运动停止…")
                 return
+            # 运动停止：重建 tracker（清空缓冲，下一帧重新检测）
+            self._stable_buf.clear()
             pose = self._detect_tag(frame)
             if pose is None:
                 self._fallback_to_wait_detect("approach")
@@ -756,10 +843,12 @@ class AprilTagPlace1Node(Node):
         delta = tz - self._closed_loop_end
         if abs(delta) <= self._dist_thr:
             self.get_logger().info(
-                f"approach 完成: tz={tz:.3f}m（闭环终点 {self._closed_loop_end:.2f}m）")
+                f"approach 完成: tz={tz:.3f}m（闭环终点 {self._closed_loop_end:.2f}m），"
+                f"进入 yaw_finetune（最多 {self._max_yaw_finetune} 次）")
             with self._lock:
                 self._stable_buf.clear()
-                self._state = STATE_FINAL_CHECK
+                self._state = STATE_YAW_FINETUNE
+                self._yaw_rounds = 0
                 self._phase_busy = False
             return
 
@@ -770,108 +859,109 @@ class AprilTagPlace1Node(Node):
             return
 
         self._app_rounds += 1
-        self.get_logger().info(
-            f"approach 轮次 {self._app_rounds}: tz={tz:.3f}m  delta={delta:.3f}m")
-        self._send_move(delta, 0.0, 0.0)
-        self._phase_busy = True
 
-    # ──────────────────────────── phase_5 ───────────────────────────────────── #
-
-    def _do_final_check(self, frame: np.ndarray):
-        pose = self._detect_tag(frame)
-        if pose is None:
-            self._fallback_to_wait_detect("final_check")
-            return
-
-        tx, tz = pose["tx"], pose["tz"]
-        alpha_deg = math.degrees(math.atan2(tx, tz)) if tz > 0 else 999.0
-
-        yaw_ok  = abs(alpha_deg) <= self._yaw_thr_deg
-        lat_ok  = abs(tx)        <= self._lat_thr
-        dist_ok = abs(tz - self._closed_loop_end) <= self._dist_thr
-
-        if yaw_ok and lat_ok and dist_ok:
-            self._stable_buf.append({"tx": tx, "tz": tz})
-        else:
-            self._stable_buf.clear()
-            if self._heartbeat("final_check", 2.0):
-                self.get_logger().info(
-                    f"final_check 未全达标: yaw={yaw_ok}({alpha_deg:.1f}°) "
-                    f"lat={lat_ok}({tx:.3f}m) "
-                    f"dist={dist_ok}({tz - self._closed_loop_end:+.3f}m)，回 yaw_align 修正")
-            # 任何一项不达标都回到 yaw_align 重新修正
+        # 阻尼系数：只走误差的 60%，防止 pose_controller 超调
+        damped_delta = delta * 0.6
+        # 限幅：单次前进最大 20cm，防止晃出视野（从 30cm 改为 20cm）
+        damped_delta = max(-0.20, min(0.20, damped_delta))
+        # 最小步长：小于 5cm 不走了，直接认为到位
+        if abs(damped_delta) < 0.05:
+            self.get_logger().info(
+                f"approach 完成（剩余误差 {delta:.3f}m < 5cm 阈值），"
+                f"进入 yaw_finetune（最多 {self._max_yaw_finetune} 次）")
             with self._lock:
+                self._stable_buf.clear()
+                self._state = STATE_YAW_FINETUNE
                 self._yaw_rounds = 0
-                self._lat_rounds = 0
-                self._app_rounds = 0
-                self._last_pose  = pose
-                self._state      = STATE_YAW_ALIGN
                 self._phase_busy = False
             return
 
-        if len(self._stable_buf) >= self._stable_frames:
-            pose = self._stable_buf[-1]
-            tx, tz = pose["tx"], pose["tz"]
-            alpha_deg = math.degrees(math.atan2(tx, tz)) if tz > 0 else 999.0
-            # 盲进距离：以 final_check 通过时的实测距离为基准，保证末端站位与
-            # 旧「verify + final_forward」逻辑一致（tz≈closed_loop_end 时
-            # blind≈final_forward_offset_m），且随实测残差自适应
-            blind = tz - self._closed_loop_end + self._final_fwd_offset
-            if blind <= 0.0:
-                self.get_logger().error(
-                    f"final_check 通过但盲进距离异常: tz={tz:.3f}m → blind={blind:.3f}m，"
-                    "请检查站位参数配置")
-                self._stable_buf.clear()
-                with self._lock:
-                    self._state = STATE_ERROR
-                return
-            self.get_logger().info(
-                f"final_check 通过！tx={tx:.3f}m  tz={tz:.3f}m  alpha={alpha_deg:.2f}°，"
-                f"准备开环盲进 {blind:.3f}m")
-            self._stable_buf.clear()
-            self._blind_dist = blind
-            self._blind_started = False
-            with self._lock:
-                self._state = STATE_BLIND_FORWARD
-            return
-
-    # ──────────────────────────── phase_6 ───────────────────────────────────── #
-
-    def _do_blind_forward(self):
-        """final_check 通过后，开环直线前进 blind_dist，再发抓取信号。
-
-        blind = tz_measured - closed_loop_end_dist + final_forward_offset_m
-        其中 tz_measured 为 final_check 通过时的实测距离；此时 Tag 已太近
-        测不准，不再看相机，纯里程计开环。
-        """
-        if not getattr(self, "_blind_started", False):
-            ready, issues = self._check_motion_pipeline()
-            if not ready:
-                self.get_logger().error(
-                    "blind_forward: 运动链路未就绪：" + "；".join(issues))
-                with self._lock:
-                    self._state = STATE_ERROR
-                return
-
-            self.get_logger().info(
-                f"blind_forward: 重置原点并开环前进 {self._blind_dist:.3f}m")
-            self._reset_origin()
-            time.sleep(0.15)
-            self._send_move(self._blind_dist, 0.0, 0.0)
-            self._blind_started = True
-            return
-
-        if not self._is_cmd_vel_zero():
-            if self._heartbeat("motion_wait", 2.0):
-                self.get_logger().info("blind_forward: 等待盲进运动停止…")
-            return
-
         self.get_logger().info(
-            f"blind_forward 完成，前进 {self._blind_dist:.3f}m，发布抓取信号")
+            f"approach 轮次 {self._app_rounds}: tz={tz:.3f}m  delta={delta:.3f}m → 阻尼+限幅后={damped_delta:.3f}m")
+        self._send_move(damped_delta, 0.0, 0.0)
+        self._phase_busy = True
+
+    # ──────────────────────────── phase_4：yaw 收尾修正 ────────────────────── #
+
+    def _do_yaw_finetune(self, frame: np.ndarray):
+        """
+        approach 完成（tz≈closed_loop_end_dist）后的 yaw 收尾修正。
+
+        与 block_align 类似的 2D 主策略：先横向 + 前后到位，最后再做 yaw 微调。
+        约束：
+          - 最多 self._max_yaw_finetune 次（默认 3），达到即使仍有偏差也直接
+            emit + done（不视为失败）。设计文档里 "yaw 有偏差不影响流程"。
+          - 每次旋转单步限幅 max_yaw_step_deg（默认 3°），防惯性冲过。
+          - 单次运动完毕重新检测 tag pose；若 tag 完全丢失（超出 lost_tolerance）
+            则同样直接 emit + done——距离已到位，abcd_task 上层可以继续，
+            不会因为 tag 视野问题卡住。
+        """
+        # busy：等运动停下，重新检测一次
+        if getattr(self, "_phase_busy", False):
+            if not self._is_cmd_vel_zero():
+                if self._heartbeat("motion_wait", 2.0):
+                    self.get_logger().info("yaw_finetune: 等待旋转运动停止…")
+                return
+            pose = self._detect_tag(frame)
+            if pose is None:
+                # Tag 真丢失：距离已经到位，yaw 偏差不影响上层——直接结束
+                self.get_logger().warning(
+                    "yaw_finetune: tag 丢失（含 lost_tolerance 后），"
+                    "距离已到位，跳过后续修正，直接结束")
+                self._emit_and_done()
+                return
+            self._last_pose = pose
+            self._phase_busy = False
+
+        pose = self._last_pose
+        tx, tz = pose["tx"], pose["tz"]
+        if tz <= 0.0:
+            self.get_logger().warning(
+                f"yaw_finetune: tz={tz:.3f} 异常，跳过 yaw 修正，直接结束")
+            self._emit_and_done()
+            return
+
+        alpha_rad = math.atan2(tx, tz)
+        alpha_deg = math.degrees(alpha_rad)
+
+        # 阈值内视为达标 → 直接完成
+        if abs(alpha_deg) <= self._yaw_thr_deg:
+            self.get_logger().info(
+                f"yaw_finetune 完成: alpha={alpha_deg:.2f}° "
+                f"(轮次={self._yaw_rounds}/{self._max_yaw_finetune})")
+            self._emit_and_done()
+            return
+
+        # 用尽最大次数 → warning + 直接完成（关键行为：有偏差不影响流程）
+        if self._yaw_rounds >= self._max_yaw_finetune:
+            self.get_logger().warning(
+                f"yaw_finetune: 达到最大次数 {self._max_yaw_finetune}，"
+                f"仍有残余偏差 alpha={alpha_deg:.2f}°，按设计直接 emit 完成"
+            )
+            self._emit_and_done()
+            return
+
+        # 发一次修正
+        self._yaw_rounds += 1
+        theta_cmd = -max(min(alpha_deg, self._max_yaw_step_deg),
+                         -self._max_yaw_step_deg)
+        self.get_logger().info(
+            f"yaw_finetune 轮次 {self._yaw_rounds}/{self._max_yaw_finetune}: "
+            f"alpha={alpha_deg:.2f}°，发送旋转 theta={theta_cmd:.2f}°"
+        )
+        self._reset_origin()
+        time.sleep(0.15)  # 等 pose_controller 先处理 reset_origin，避免 /move 被清空
+        # theta 逆时针为正，目标偏右(alpha>0) → 狗需向右转（theta 负）
+        self._send_move(0.0, 0.0, theta_cmd)
+        self._phase_busy = True
+
+    def _emit_and_done(self):
+        """统一收尾：发抓取信号 + 转 STATE_DONE。yaw_finetune 的多个出口共享。"""
         self._emit_place1()
         with self._lock:
+            self._stable_buf.clear()
+            self._phase_busy = False
             self._state = STATE_DONE
-        self._blind_started = False
 
     # ──────────────────────────── 析构 ──────────────────────────────────────── #
 

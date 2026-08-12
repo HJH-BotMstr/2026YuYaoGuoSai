@@ -90,6 +90,10 @@ class GraspTaskNode(Node):
         self.declare_parameter("motion_stop_timeout_s", 15.0)
         self.declare_parameter("motion_stop_zero_duration_s", 0.5)
         self.declare_parameter("odom_fresh_timeout_s", 0.5)
+        # 多轮循环：max_rounds=1 时保持原有单轮行为；abcd_task 会覆写为 4。
+        # inter_round_wait_s 是两轮之间的短暂间隔，让 latched 消息/上层编排刷新。
+        self.declare_parameter("max_rounds", 1)
+        self.declare_parameter("inter_round_wait_s", 0.5)
 
         # 加载配置并强制 robot 模式
         self.cfg = load_config(self)
@@ -603,8 +607,32 @@ def main(args=None):
     exec_thread = threading.Thread(target=executor.spin, daemon=True)
     exec_thread.start()
 
+    # 多轮循环支持：默认 max_rounds=1 保持原单轮行为；abcd_task 里覆写为 4
     try:
-        node.run_state_machine()
+        max_rounds = int(node.get_parameter("max_rounds").value)
+    except Exception:
+        max_rounds = 1
+    max_rounds = max(1, max_rounds)
+    try:
+        inter_wait = float(node.get_parameter("inter_round_wait_s").value)
+    except Exception:
+        inter_wait = 0.5
+    inter_wait = max(0.0, inter_wait)
+
+    try:
+        for round_idx in range(max_rounds):
+            if not rclpy.ok():
+                break
+            if max_rounds > 1:
+                node.get_logger().info(
+                    "=== round %d / %d ===" % (round_idx + 1, max_rounds))
+            # 每轮开始前清空 Event，防止上一轮 /grasp/start、/grasp/place 的
+            # 缓存立刻触发新一轮；同时 tools 侧 InspectionMemory 保留 zone。
+            node._start_event.clear()
+            node._place_event.clear()
+            node.run_state_machine()
+            if round_idx + 1 < max_rounds and rclpy.ok():
+                time.sleep(inter_wait)
     except KeyboardInterrupt:
         node.get_logger().warning("用户中断，执行安全归位")
     except Exception as e:

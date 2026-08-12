@@ -9,7 +9,16 @@ class BlockDetection:
     输出色块颜色、包围框、中心偏移（像素）、距离估算（mm）。
     """
 
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, target_color: Optional[str] = None):
+        """
+        初始化色块检测器。
+
+        Args:
+            cfg: 配置字典，包含相机内参、HSV 阈值等
+            target_color: 目标颜色 "red" | "green" | None
+                         None 时检测所有颜色（默认行为，向后兼容）
+                         指定颜色时只检测该颜色，忽略其他颜色
+        """
         self._fx = float(cfg["arm_cam_fx"])
         self._real_width_mm = float(cfg["block_real_width_mm"])
         self._min_area = int(cfg.get("block_min_area", 800))
@@ -20,6 +29,11 @@ class BlockDetection:
         self._red_upper2 = np.array(cfg["hsv_red_upper2"], dtype=np.uint8)
         self._green_lower = np.array(cfg["hsv_green_lower"], dtype=np.uint8)
         self._green_upper = np.array(cfg["hsv_green_upper"], dtype=np.uint8)
+
+        # 目标颜色过滤（2026-08-12 新增）
+        self._target_color = target_color  # "red" | "green" | None
+        if target_color and target_color not in ("red", "green"):
+            raise ValueError(f"target_color 必须是 'red'、'green' 或 None，收到: {target_color}")
 
         # 畸变参数，用于 undistort
         dist = cfg.get("arm_cam_dist", [0.0, 0.0, 0.0, 0.0, 0.0])
@@ -59,7 +73,18 @@ class BlockDetection:
         mask_green = cv2.inRange(hsv, self._green_lower, self._green_upper)
 
         best = None  # (area, color, x, y, bw, bh)
-        for color, mask in (("red", mask_red), ("green", mask_green)):
+
+        # 根据 target_color 决定检测哪些颜色
+        colors_to_detect = []
+        if self._target_color is None:
+            # 检测所有颜色（向后兼容）
+            colors_to_detect = [("red", mask_red), ("green", mask_green)]
+        elif self._target_color == "red":
+            colors_to_detect = [("red", mask_red)]
+        elif self._target_color == "green":
+            colors_to_detect = [("green", mask_green)]
+
+        for color, mask in colors_to_detect:
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel)
             mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
@@ -133,7 +158,17 @@ class BlockDetection:
         cam_cx = self._cam_mtx[0, 2]
         cam_cy = self._cam_mtx[1, 2]
 
-        for color, raw_mask in (("red", mask_red), ("green", mask_green)):
+        # 根据 target_color 决定检测哪些颜色
+        colors_to_detect = []
+        if self._target_color is None:
+            # 检测所有颜色（向后兼容）
+            colors_to_detect = [("red", mask_red), ("green", mask_green)]
+        elif self._target_color == "red":
+            colors_to_detect = [("red", mask_red)]
+        elif self._target_color == "green":
+            colors_to_detect = [("green", mask_green)]
+
+        for color, raw_mask in colors_to_detect:
             mask = cv2.morphologyEx(raw_mask, cv2.MORPH_OPEN,  kernel)
             mask = cv2.morphologyEx(mask,     cv2.MORPH_CLOSE, kernel)
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
