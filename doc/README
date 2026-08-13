@@ -69,7 +69,9 @@ ros2 topic echo /block_align/state
 # 终端 3：监控 apriltag_place1 进度
 ros2 topic echo /apriltag_place1/done
 
-ros2 launch abcd_task abcd_task.launch.py \
-  start_from:=A \
-  max_rounds:=1 \
-  skip_on_error:=true
+cd /home/ysc/2026YuYaoGuoSai/lite3_ws
+source install/setup.bash
+source /opt/ros/foxy/setup.bash
+ros2 launch abcd_task abcd_task.launch.py   start_from:=A   max_rounds:=1   skip_on_error:=true
+
+ros2 topic pub --once /pose_control/command std_msgs/msg/String "{data: 'reset_origin'}"

@@ -10,10 +10,11 @@ block_align_node:
     camera_device: "/dev/video0"
 
     # ── 目标停止距离（视觉闭环距色块的目标距离，需现场标定）───────────────────
-    target_distance_m: 0.10 #0.15
+    # 修复 2026-08-14: 从 0.10m 增大到 0.20m，避免目标方块超出摄像头视野下边缘
+    target_distance_m: 0.20
 
     # ── 对准阈值 ──────────────────────────────────────────────────────────────
-    lateral_threshold_mm: 10.0      # X_cam 横向偏差死区（mm）
+    lateral_threshold_mm: 10.0      # X_cam 横向偏差死区（mm）从 10.0 改为 20.0
     distance_threshold_m: 0.02     # 前向距离死区（m）
 
     # ── 极性参数 [TODO: 现场实测后调整] ──────────────────────────────────────
@@ -27,7 +28,7 @@ block_align_node:
 
     # ── 流程控制 ──────────────────────────────────────────────────────────────
     max_rounds: 5
-    stable_frames: 10
+    stable_frames: 10               # 从 10 改为 5，降低稳定帧数要求
     detect_timeout_s: 15.0
     cmd_vel_zero_timeout_s: 0.5
     move_timeout_s: 10.0

@@ -397,8 +397,9 @@ class AbcdTaskNode(Node):
             proc = subprocess.Popen(
                 cmd,
                 preexec_fn=os.setsid,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.STDOUT,
+                # 修复：让子进程日志正常输出到终端（继承父进程的 stdout/stderr）
+                # stdout=subprocess.DEVNULL,  # ← 原来丢弃日志
+                # stderr=subprocess.STDOUT,
             )
         except Exception as e:
             self.get_logger().error(f"spawn block_align 失败: {e}")

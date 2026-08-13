@@ -22,6 +22,7 @@ import threading
 import time
 from pathlib import Path
 
+import cv2
 import rclpy
 from rclpy.node import Node
 
@@ -47,7 +48,7 @@ class GaugeYoloServerNode(Node):
         super().__init__('gauge_yolo_server')
 
         # ========== 参数声明 ==========
-        self.declare_parameter('camera_id', 4)
+        self.declare_parameter('camera_id', 0)
         self.declare_parameter('width', 640)
         self.declare_parameter('height', 480)
         self.declare_parameter('preheat_frames', 80)
@@ -195,8 +196,15 @@ class GaugeYoloServerNode(Node):
             state = self._process_frame(frame)
 
             if state is None:
+                # 失败时把当前帧存下来，便于排查（画面黑、方向错、找错摄像头等）
+                debug_path = f'/tmp/gauge_fail_{int(time.time())}.jpg'
+                try:
+                    cv2.imwrite(debug_path, frame)
+                    self.get_logger().warn(f'未检测到仪表盘，已保存当前帧: {debug_path}')
+                except Exception as e:
+                    self.get_logger().warn(f'保存失败帧异常: {e}')
                 response.success = False
-                response.message = '识别失败，未检测到有效仪表盘'
+                response.message = f'识别失败，未检测到有效仪表盘（已保存 {debug_path}）'
                 return response
 
             response.success = True

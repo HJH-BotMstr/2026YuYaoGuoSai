@@ -50,8 +50,8 @@ class TargetTracker:
         if not self._locked:
             if not candidates:
                 return
-            # 选最近目标（已按 distance_mm 升序）
-            chosen = min(candidates, key=lambda r: r["distance_mm"])
+            # 选最右目标（X_cam 最大，图像坐标系 X 轴向右）
+            chosen = max(candidates, key=lambda r: r["pos_3d"][0])
             self._locked = True
             cx, cy = self._bbox_center(chosen)
             self._lock_cx = cx
@@ -91,6 +91,12 @@ class TargetTracker:
     # ------------------------------------------------------------------ #
     def is_locked(self) -> bool:
         return self._locked
+
+    def get_current_target(self) -> Optional[dict]:
+        """返回当前锁定目标的原始（未做滑动均值）读数，用于可视化。"""
+        if not self._locked or self._last_result is None:
+            return None
+        return self._last_result
 
     def get_stable_target(self) -> Optional[dict]:
         """

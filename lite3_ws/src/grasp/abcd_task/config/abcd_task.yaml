@@ -12,7 +12,7 @@ abcd_task_node:
     # ─── 参数：距离/超时 ───────────────────────────────────────────────
     retreat_dist_m:          0.5
     nav_timeout_s:           30.0
-    tag_align_timeout_s:     60.0      # 从 30s 延长到 60s（搜索+对齐+接近）
+    tag_align_timeout_s:     90.0      # 60s → 90s（触发搜索后 60s 不够跑完 yaw_finetune）
     grasp_flow_timeout_s:    300.0
     place_timeout_s:         120.0
     odom_fresh_timeout_s:    1.0

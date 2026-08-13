@@ -368,7 +368,13 @@ class GraspTaskNode(Node):
                 lost_frames_max=int(cfg_g["lost_frames_max"]),
             )
 
-            self._reset_command()
+            # 不发 reset_origin：/move 本身会在 pose_controller 里以当前位姿为
+            # start_pose 并清零 _integral_*（见 pose_controller_node._move_cb）；
+            # 而 reset_origin 走 /pose_control/command 与 /move 走两个话题，
+            # 顺序不保证。若 reset_origin 后到，会把 _target 清空、state=idle，
+            # 刚发的 /move 立即被取消 → cmd_vel 一直近零 → motion_waiter
+            # 15s 超时 → ALIGN_FAILED。与 block_align_node 保持一致（见其
+            # _do_lateral_align 内注释）。
             self._motion_waiter.reset()
 
             # 发布横向移动：ROS 约定 Pose2D.y 正=左移；相机侧 X_cam>0 表示物块在图像/视野右侧，

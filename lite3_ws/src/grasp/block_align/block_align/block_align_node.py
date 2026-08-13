@@ -269,7 +269,11 @@ class BlockAlignNode(Node):
 
         # 调试窗口（无 X display 时会拉起 Qt 崩溃，默认关闭）
         if self._show_debug:
-            vis = self._detector.visualize(frame.copy(), candidates[0] if candidates else None)
+            # 画 tracker 当前锁定的目标（而非最近的 candidates[0]），
+            # 未锁定或未匹配到时退回画 candidates[0]，都没有就不画
+            locked = self._tracker.get_current_target()
+            draw = locked if locked is not None else (candidates[0] if candidates else None)
+            vis = self._detector.visualize(frame.copy(), draw)
             cv2.putText(vis, "state=%s" % self._state, (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
             cv2.imshow("block_align", vis)
@@ -320,18 +324,34 @@ class BlockAlignNode(Node):
 
     def _is_cmd_vel_zero(self) -> bool:
         now = time.monotonic()
+        started  = self._cmdvel_motion_started
+
+        # 兜底检查必须在 recent 检查之前：防止 recent=[] 时提前返回 False
+        # 极小步（如 y=0.012m）cmd_vel 峰值不到 0.01，_cmdvel_motion_started
+        # 永远不翻 True，会把 phase_busy 分支卡死。发出指令后超过 move_timeout_s
+        # 仍未检测到运动，视为已完成，放行下一相位。
+        if (not started
+                and self._last_move_time > 0.0
+                and now - self._last_move_time > self._move_timeout):
+            if not self._move_ignored_warned:
+                self.get_logger().warning(
+                    "运动指令 %.1fs 内未见非零 cmd_vel，按已完成放行" % self._move_timeout)
+                self._move_ignored_warned = True
+            return True
+
         cutoff = now - self._cmdvel_zero_t
         recent = [(t, v) for (t, v) in self._cmdvel_history if t >= cutoff]
         if not recent:
             return False
         all_zero = all(v < 0.01 for (_, v) in recent)
-        started  = self._cmdvel_motion_started
+
         if not started and self._last_move_time > 0.0 and not self._move_ignored_warned:
             if now - self._last_move_time > self._cmdvel_zero_t:
                 self.get_logger().warning(
                     "运动指令发出后未检测到 /cmd_vel 非零，"
                     "可能被控制器忽略（检查 /leg_odom2 是否已发布）")
                 self._move_ignored_warned = True
+
         return started and all_zero
 
     def _check_motion_pipeline(self) -> Tuple[bool, List[str]]:
@@ -413,6 +433,25 @@ class BlockAlignNode(Node):
         if stable is None:
             return
 
+        # 修复 2026-08-14：确保锁定最右边的目标
+        # 场景：两个同色方块同框时，tracker 可能锁定了靠中心的（不是最右的）
+        # 解决：检测到稳定目标后，如果当前帧有多个候选且 tracker 没锁定最右的，重新锁定
+        all_candidates = self._detector.detect_all(frame)
+        if len(all_candidates) >= 2:
+            rightmost = max(all_candidates, key=lambda r: r["pos_3d"][0])
+            # 判断 tracker 当前锁定的是否是最右的
+            if stable["pos_3d"][0] < rightmost["pos_3d"][0] - 5.0:  # 5mm 容差
+                self.get_logger().info(
+                    "wait_detect 检测到更右的目标 (%.1fmm > %.1fmm)，重新锁定" % (
+                        rightmost["pos_3d"][0], stable["pos_3d"][0]))
+                # 重建 tracker 并锁定最右的
+                self._tracker = self._TargetTracker(
+                    avg_window=self._tracker_avg,
+                    lost_frames_max=self._tracker_lost,
+                )
+                self._tracker.update([rightmost])
+                return  # 等待下一帧稳定
+
         X_cam, Y_cam, _ = stable["pos_3d"]
         self.get_logger().info(
             "色块稳定锁定: X_cam=%.1fmm  Y_cam=%.1fmm  dist=%.1fmm" % (
@@ -480,6 +519,27 @@ class BlockAlignNode(Node):
             stable = self._detect_frame(frame)
             if stable is None:
                 return  # tracker 未稳定，继续等下一帧
+
+            # 修复 2026-08-14：确保锁定最右边的目标
+            # 场景：两个同色方块同框时，tracker 可能锁定了靠中心的（不是最右的）
+            # 解决：检测到稳定目标后，如果当前帧有多个候选且 tracker 没锁定最右的，重新锁定
+            all_candidates = self._detector.detect_all(frame)
+            if len(all_candidates) >= 2:
+                rightmost = max(all_candidates, key=lambda r: r["pos_3d"][0])
+                # 判断 tracker 当前锁定的是否是最右的
+                if stable["pos_3d"][0] < rightmost["pos_3d"][0] - 5.0:  # 5mm 容差
+                    self.get_logger().info(
+                        "search 检测到更右的目标 (%.1fmm > %.1fmm)，重新锁定" % (
+                            rightmost["pos_3d"][0], stable["pos_3d"][0]))
+                    # 重建 tracker 并锁定最右的
+                    self._tracker = self._TargetTracker(
+                        avg_window=self._tracker_avg,
+                        lost_frames_max=self._tracker_lost,
+                    )
+                    self._tracker.update([rightmost])
+                    self._settle_tracker_ready = False
+                    return  # 等待下一帧稳定
+
             X_cam, Y_cam, _ = stable["pos_3d"]
             self.get_logger().info(
                 "search 第 %d 步命中: X_cam=%.1fmm  Y_cam=%.1fmm  dist=%.1fmm" % (
@@ -494,8 +554,10 @@ class BlockAlignNode(Node):
             return
 
         # 空闲：发下一步搜索指令
-        # lateral_polarity=-1 时应向 body +y 方向搜（从右往左）→ 取 -polarity
-        y_dir = -self._lat_polarity
+        # 修复 2026-08-14：搜索方向改为"从左往右"（body -y 方向），
+        # 优先覆盖右侧区域，配合 TargetTracker 的 max(X_cam) 确保锁定最右边的目标
+        # lateral_polarity=-1 时向 body -y 方向搜（从左往右）→ 取 +polarity
+        y_dir = self._lat_polarity
         y_move = y_dir * self._search_step_m
         self._search_steps_done += 1
         self.get_logger().info(
@@ -523,6 +585,11 @@ class BlockAlignNode(Node):
                 self._settle_tracker_ready = True
             stable = self._detect_frame(frame)
             if stable is None:
+                # 增强 debug：避免静默等待，打印当前状态
+                if self._lat_rounds > 0:
+                    self.get_logger().warn(
+                        "lateral_align 等待稳定检测（已执行 %d 轮，tracker 未稳定）" %
+                        self._lat_rounds)
                 return   # tracker 未稳定，等下一帧
             self._last_pose  = stable
             self._phase_busy = False
@@ -576,6 +643,11 @@ class BlockAlignNode(Node):
                 self._settle_tracker_ready = True
             stable = self._detect_frame(frame)
             if stable is None:
+                # 增强 debug：避免静默等待，打印当前状态
+                if self._app_rounds > 0:
+                    self.get_logger().warn(
+                        "approach 等待稳定检测（已执行 %d 轮，tracker 未稳定）" %
+                        self._app_rounds)
                 return
             self._last_pose  = stable
             self._phase_busy = False
