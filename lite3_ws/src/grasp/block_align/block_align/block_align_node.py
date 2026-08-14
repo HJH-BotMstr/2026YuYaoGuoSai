@@ -74,6 +74,9 @@ class BlockAlignNode(Node):
         self.declare_parameter("detect_timeout_s",       15.0)
         self.declare_parameter("cmd_vel_zero_timeout_s", 0.5)
         self.declare_parameter("move_timeout_s",         10.0)
+        # ── pose_controller 健康检查（2026-08-14）──
+        self.declare_parameter("motion_watchdog_timeout_s", 3.0)
+        self.declare_parameter("motion_reset_recovery_s",   1.0)
         # +1: 目标偏右时向右移（Pose2D.y 负值）
         # -1: 目标偏右时向左移（Pose2D.y 正值）
         # 现场实测后调整；默认 -1（X_cam>0 偏右 → y=−X_cam/1000 → 狗向右）
@@ -102,6 +105,8 @@ class BlockAlignNode(Node):
         self._detect_timeout = self.get_parameter("detect_timeout_s").value
         self._cmdvel_zero_t  = self.get_parameter("cmd_vel_zero_timeout_s").value
         self._move_timeout   = self.get_parameter("move_timeout_s").value
+        self._watchdog_timeout = float(self.get_parameter("motion_watchdog_timeout_s").value)
+        self._reset_recovery   = float(self.get_parameter("motion_reset_recovery_s").value)
         self._lat_polarity   = int(self.get_parameter("lateral_polarity").value)
         self._show_debug     = bool(self.get_parameter("show_debug_window").value)
         self._search_step_m      = float(self.get_parameter("search_step_m").value)
@@ -171,6 +176,10 @@ class BlockAlignNode(Node):
 
         # odom 监测
         self._last_legodom_time     = 0.0
+
+        # 看门狗：记录上次成功收到运动链路数据的时间
+        self._last_pipeline_healthy_time = time.monotonic()
+        self._pipeline_reset_count       = 0
 
         # 轮次计数
         self._lat_rounds = 0
@@ -256,9 +265,13 @@ class BlockAlignNode(Node):
         self._cmdvel_received_count += 1
         if speed >= 0.01 and not self._cmdvel_motion_started:
             self._cmdvel_motion_started = True
+        # 更新运动链路健康时间戳
+        self._last_pipeline_healthy_time = now
 
     def _odom_cb(self, msg: Odometry):
         self._last_legodom_time = time.monotonic()
+        # 更新运动链路健康时间戳
+        self._last_pipeline_healthy_time = time.monotonic()
 
     # ──────────────────────────── 检测 ──────────────────────────────────────── #
 
@@ -301,6 +314,40 @@ class BlockAlignNode(Node):
         self._pub_cmd.publish(String(data="reset_origin"))
         self.get_logger().info("发布 reset_origin")
 
+    def _reset_pose_controller(self):
+        """发送 cancel 命令重置 pose_controller，清空其内部运动队列和状态。"""
+        self._pub_cmd.publish(String(data="cancel"))
+        self.get_logger().warning("发送 cancel 命令重置 pose_controller")
+        self._pipeline_reset_count += 1
+        # 等待恢复
+        time.sleep(self._reset_recovery)
+        # 重置运动状态标志
+        self._cmdvel_motion_started = False
+        self._move_ignored_warned = False
+        self._last_pipeline_healthy_time = time.monotonic()
+
+    def _check_motion_watchdog(self) -> bool:
+        """运动链路看门狗：如果正在等待运动完成，且链路数据超时未更新，返回 True。
+
+        Returns:
+            True: 链路异常，需要重置
+            False: 链路正常
+        """
+        # 只在 phase_busy（正在等待运动完成）时才检查
+        if not self._phase_busy:
+            return False
+
+        now = time.monotonic()
+        elapsed = now - self._last_pipeline_healthy_time
+
+        if elapsed > self._watchdog_timeout:
+            self.get_logger().error(
+                f"运动链路看门狗触发：{elapsed:.1f}s 未收到 /cmd_vel 或 /leg_odom2 更新，"
+                f"pose_controller 可能异常（已重置 {self._pipeline_reset_count} 次）")
+            return True
+
+        return False
+
     def _emit_grasp_start(self):
         """
         发布 /grasp/start = True 触发 grasp_task，并释放摄像头。
@@ -308,6 +355,9 @@ class BlockAlignNode(Node):
         修复 2026-08-12：block_align 完成后发布此信号，取代原 apriltag_place1 的触发。
         新流程：apriltag → block_align（色块对齐+横向搜索）→ grasp_task（抓取）。
         避免了 apriltag 和 block_align 同时触发 grasp_task 导致的摄像头资源竞争。
+
+        修复 2026-08-14：立即退出节点，彻底释放摄像头资源。
+        block_align 完成任务后不再需要存在，立即退出避免与 grasp_task 竞争 /dev/video0。
         """
         self._pub_grasp.publish(Bool(data=True))
         self.get_logger().info("发布 /grasp/start = True (触发 grasp_task 抓取)")
@@ -319,6 +369,11 @@ class BlockAlignNode(Node):
             except Exception as e:
                 self.get_logger().warning("释放摄像头异常: %s" % (e,))
             self._cap = None
+
+        # 2026-08-14: 立即退出节点，彻底释放摄像头资源
+        self.get_logger().info("摄像头已释放，节点即将退出")
+        import sys
+        sys.exit(0)
 
     # ──────────────────────────── 运动完成判断 ──────────────────────────────── #
 
@@ -506,6 +561,14 @@ class BlockAlignNode(Node):
 
         # 正在运动中：等 cmd_vel 归零后再检测
         if self._phase_busy:
+            # 运动链路看门狗检查
+            if self._check_motion_watchdog():
+                self._reset_pose_controller()
+                self._phase_busy = False
+                self._settle_tracker_ready = False
+                # 重新尝试当前步
+                return
+
             if not self._is_cmd_vel_zero():
                 return
             # 运动停止：重建 tracker 一次，然后连续多帧才会 stable
@@ -572,6 +635,14 @@ class BlockAlignNode(Node):
 
     def _do_lateral_align(self, frame: np.ndarray):
         if self._phase_busy:
+            # 运动链路看门狗检查
+            if self._check_motion_watchdog():
+                self._reset_pose_controller()
+                self._phase_busy = False
+                self._settle_tracker_ready = False
+                # 重新尝试当前轮次
+                return
+
             if not self._is_cmd_vel_zero():
                 return
             # 运动停止后重新检测：tracker 只在"刚停下"那一帧重建一次，
@@ -632,6 +703,14 @@ class BlockAlignNode(Node):
 
     def _do_approach(self, frame: np.ndarray):
         if self._phase_busy:
+            # 运动链路看门狗检查
+            if self._check_motion_watchdog():
+                self._reset_pose_controller()
+                self._phase_busy = False
+                self._settle_tracker_ready = False
+                # 重新尝试当前轮次
+                return
+
             if not self._is_cmd_vel_zero():
                 return
             # 同 _do_lateral_align：tracker 只在刚停下时重建一次

@@ -251,6 +251,12 @@ class GraspTaskNode(Node):
             return
         if self.arm_cam is not None:
             return
+        # 2026-08-14: 等待 block_align 子进程完全退出并释放摄像头资源
+        # block_align 在发布 /grasp/start 后会立即 cap.release()，
+        # 但进程本身要等 abcd_task 发 SIGTERM 才退出。
+        # 这里等待 2s，确保摄像头驱动完全释放，避免资源竞争。
+        self.get_logger().info("等待 2s，确保 block_align 释放摄像头...")
+        time.sleep(2.0)
         self.arm_cam = _open_camera(self._cam_device, logger=self.get_logger())
         if self.arm_cam is None:
             raise RuntimeError(f"机械臂摄像头打开失败: {self._cam_device}")
