@@ -711,7 +711,11 @@ class AprilTagPlace1Node(Node):
                 f"检测到目标 ID 的帧 {self._detect_target_frames} 次，"
                 f"稳定缓冲 {len(self._stable_buf)}/{self._stable_frames}"
             )
-            # 进入横向搜索
+            # 进入横向搜索前，先激活 pose_controller（发 reset_origin），确保运动链路就绪
+            self.get_logger().info("准备进入横向搜索，先激活 pose_controller...")
+            self._pub_cmd.publish(String(data="reset_origin"))
+            time.sleep(0.3)  # 等待 pose_controller 响应并开始发布 /cmd_vel
+
             ready, issues = self._check_motion_pipeline()
             if not ready:
                 self.get_logger().error(
@@ -789,7 +793,16 @@ class AprilTagPlace1Node(Node):
             # 检查运动超时
             if time.monotonic() - self._phase_start_time > self._move_timeout:
                 self.get_logger().error(
-                    f"search: 第 {self._search_steps_done} 步运动超时（{self._move_timeout}s），放弃")
+                    f"search: 第 {self._search_steps_done} 步运动超时（{self._move_timeout}s），强制停止运动")
+                # 发送 cancel 停止 pose_controller
+                msg = String()
+                msg.data = "cancel"
+                self._pub_cmd.publish(msg)
+                time.sleep(0.2)  # 等待 cancel 生效
+                # 发送零速度兜底
+                self._send_move(0.0, 0.0, 0.0)
+                time.sleep(0.5)  # 等待速度归零
+                self.get_logger().warning("已强制停止运动，search 失败")
                 with self._lock:
                     self._state = STATE_ERROR
                 return
@@ -852,7 +865,16 @@ class AprilTagPlace1Node(Node):
             # 检查运动超时
             if time.monotonic() - self._phase_start_time > self._move_timeout:
                 self.get_logger().error(
-                    f"lateral_align: 运动超时（{self._move_timeout}s），放弃")
+                    f"lateral_align: 运动超时（{self._move_timeout}s），强制停止运动")
+                # 发送 cancel 停止 pose_controller
+                msg = String()
+                msg.data = "cancel"
+                self._pub_cmd.publish(msg)
+                time.sleep(0.2)  # 等待 cancel 生效
+                # 发送零速度兜底
+                self._send_move(0.0, 0.0, 0.0)
+                time.sleep(0.5)  # 等待速度归零
+                self.get_logger().warning("已强制停止运动，lateral_align 失败")
                 with self._lock:
                     self._state = STATE_ERROR
                 return
@@ -916,7 +938,16 @@ class AprilTagPlace1Node(Node):
             # 检查运动超时
             if time.monotonic() - self._phase_start_time > self._move_timeout:
                 self.get_logger().error(
-                    f"approach: 运动超时（{self._move_timeout}s），放弃")
+                    f"approach: 运动超时（{self._move_timeout}s），强制停止运动")
+                # 发送 cancel 停止 pose_controller
+                msg = String()
+                msg.data = "cancel"
+                self._pub_cmd.publish(msg)
+                time.sleep(0.2)  # 等待 cancel 生效
+                # 发送零速度兜底
+                self._send_move(0.0, 0.0, 0.0)
+                time.sleep(0.5)  # 等待速度归零
+                self.get_logger().warning("已强制停止运动，approach 失败")
                 with self._lock:
                     self._state = STATE_ERROR
                 return
@@ -1008,7 +1039,16 @@ class AprilTagPlace1Node(Node):
             elapsed = time.monotonic() - self._phase_start_time
             if elapsed > self._move_timeout:
                 self.get_logger().error(
-                    f"yaw_finetune: 运动超时（{self._move_timeout}s），跳过修正，直接完成")
+                    f"yaw_finetune: 运动超时（{self._move_timeout}s），强制停止运动")
+                # 发送 cancel 停止 pose_controller
+                msg = String()
+                msg.data = "cancel"
+                self._pub_cmd.publish(msg)
+                time.sleep(0.2)  # 等待 cancel 生效
+                # 发送零速度兜底
+                self._send_move(0.0, 0.0, 0.0)
+                time.sleep(0.5)  # 等待速度归零
+                self.get_logger().warning("已强制停止运动，跳过修正，直接完成")
                 self._emit_and_done()
                 return
 

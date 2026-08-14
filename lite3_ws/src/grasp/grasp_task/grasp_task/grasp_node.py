@@ -97,6 +97,8 @@ class GraspTaskNode(Node):
         # ROI 检测区域限制（仅在 grasp_task 检测阶段使用，避免左右两侧干扰色块）
         self.declare_parameter("use_roi", True)
         self.declare_parameter("roi_center_ratio", 0.6)
+        # 横向对齐开关
+        self.declare_parameter("enable_lateral_align", True)
 
         # 加载配置并强制 robot 模式
         self.cfg = load_config(self)
@@ -111,6 +113,9 @@ class GraspTaskNode(Node):
         # ROI 参数
         self.use_roi = self.get_parameter("use_roi").value
         self.roi_center_ratio = self.get_parameter("roi_center_ratio").value
+
+        # 横向对齐开关
+        self.enable_lateral_align = self.get_parameter("enable_lateral_align").value
 
         self._lock = threading.Lock()
         self._start_event = threading.Event()
@@ -309,7 +314,7 @@ class GraspTaskNode(Node):
     # ------------------------------------------------------------------ #
     def _apply_roi(self, frame):
         """
-        对画面应用 ROI 裁剪，只保留中心区域。
+        对画面应用 ROI 裁剪，只限制横向（左右两侧），纵向高度保持完整。
         返回：裁剪后的 frame, (x_offset, y_offset)
         """
         if not self.use_roi:
@@ -317,9 +322,9 @@ class GraspTaskNode(Node):
 
         h, w = frame.shape[:2]
         roi_w = int(w * self.roi_center_ratio)
-        roi_h = int(h * self.roi_center_ratio)
+        roi_h = h  # 纵向不做限制，保持全高度
         x_offset = (w - roi_w) // 2
-        y_offset = (h - roi_h) // 2
+        y_offset = 0  # 从顶部开始
 
         roi_frame = frame[y_offset:y_offset + roi_h, x_offset:x_offset + roi_w]
         return roi_frame, (x_offset, y_offset)
@@ -434,11 +439,19 @@ class GraspTaskNode(Node):
     def _align_laterally(self, stable: dict) -> bool:
         """
         根据 X_cam 偏移发布 /move，让 pose_control 驱动机器狗横向对齐。
+
+        修复 2026-08-14：
+        1. tracker 只在运动停止后重建一次，之后连续多帧积累保证滑动平均稳定性
+        2. 强制锁定最右边的目标，避免多个同色方块时跟踪错误
+        参考 block_align_node._do_lateral_align 实现
         """
         cfg_g = self.cfg["grasp"]
         thr_mm = float(cfg_g["align_offset_threshold_mm"])
         max_rounds = 5
         X_cam = stable["pos_3d"][0]
+
+        # 运动后重新检测的控制标志（与 block_align_node 对齐）
+        settle_tracker_ready = False
 
         for round_i in range(max_rounds):
             if self._check_estop():
@@ -447,12 +460,6 @@ class GraspTaskNode(Node):
             if abs(X_cam) <= thr_mm:
                 self.get_logger().info("横向已对齐: X_cam=%.1fmm (阈值=%.1fmm)" % (X_cam, thr_mm))
                 return True
-
-            # 重置 tracker，避免旧窗口影响
-            self.tracker = TargetTracker(
-                avg_window=int(cfg_g["distance_avg_window"]),
-                lost_frames_max=int(cfg_g["lost_frames_max"]),
-            )
 
             # 不发 reset_origin：/move 本身会在 pose_controller 里以当前位姿为
             # start_pose 并清零 _integral_*（见 pose_controller_node._move_cb）；
@@ -464,25 +471,82 @@ class GraspTaskNode(Node):
             self._motion_waiter.reset()
 
             # 发布横向移动：ROS 约定 Pose2D.y 正=左移；相机侧 X_cam>0 表示物块在图像/视野右侧，
-            # 要把它拉到画面中心，狗需要向右移动 → y 取负号。
-            # 与 block_align 的 lateral_polarity=-1 保持一致。
-            msg = Pose2D(x=0.0, y=-X_cam / 1000.0, theta=0.0)
+            # 要把它拉到画面中心，狗需要向右移动 → y 取正号（修正：极性与 block_align 相反）。
+            msg = Pose2D(x=0.0, y=X_cam / 1000.0, theta=0.0)
             self._move_pub.publish(msg)
-            self.get_logger().info("第 %d 轮横向对齐: y=%.3fm" % (round_i + 1, msg.y))
+            self.get_logger().info("第 %d 轮横向对齐: y=%.3fm (X_cam=%.1fmm)" % (round_i + 1, msg.y, X_cam))
 
             if not self._motion_waiter.wait_for_stop():
                 self.get_logger().error("等待横向到位超时")
                 return False
 
-            new_stable = self._detect_stable()
+            # 修复：运动停止后重新检测，tracker 只在"刚停下"时重建一次，
+            # 之后连续多帧 update 才能凑够 stable_frames；每次都重建的话
+            # 计数永远从 0 开始，永远不会稳定
+            new_stable = self._detect_stable_after_move(settle_tracker_ready, cfg_g)
             if new_stable is None:
                 self.get_logger().error("对齐后重新识别失败")
                 return False
+
+            # 重建后首次稳定，下一轮不再重建
+            settle_tracker_ready = True
+
             X_cam = new_stable["pos_3d"][0]
             stable.update(new_stable)
 
         self.get_logger().error("横向对齐超过最大轮次 (%d)，仍未对齐 X_cam=%.1fmm" % (max_rounds, X_cam))
         return False
+
+    def _detect_stable_after_move(self, tracker_ready: bool, cfg_g: dict) -> dict:
+        """
+        运动停止后重新检测稳定目标，确保 tracker 连续性和锁定最右边目标。
+
+        Args:
+            tracker_ready: True 表示 tracker 已重建过，继续使用；False 表示需要重建
+            cfg_g: grasp 配置字典
+
+        Returns:
+            稳定检测结果 dict，或 None（超时/失败）
+        """
+        # 只在 tracker 未就绪时重建一次（与 block_align_node 逻辑一致）
+        if not tracker_ready:
+            self.tracker = TargetTracker(
+                avg_window=int(cfg_g["distance_avg_window"]),
+                lost_frames_max=int(cfg_g["lost_frames_max"]),
+            )
+
+        # 调用原有检测逻辑，获取稳定目标
+        stable = self._detect_stable()
+        if stable is None:
+            return None
+
+        # 修复：确保锁定最右边的目标（参考 block_align_node._do_wait_detect）
+        # 场景：两个同色方块同框时，tracker 可能锁定了靠中心的（不是最右的）
+        # 解决：检测到稳定目标后，如果当前帧有多个候选且 tracker 没锁定最右的，重新锁定
+        ret, frame = self.arm_cam.read()
+        if ret and frame is not None:
+            # 应用 ROI（与 _detect_stable 内部逻辑保持一致）
+            roi_frame, roi_offset = self._apply_roi(frame)
+            all_candidates = self.detector.detect_all(roi_frame)
+            all_candidates = self._restore_roi_coords(all_candidates, roi_offset)
+
+            if len(all_candidates) >= 2:
+                rightmost = max(all_candidates, key=lambda r: r["pos_3d"][0])
+                # 判断 tracker 当前锁定的是否是最右的（5mm 容差）
+                if stable["pos_3d"][0] < rightmost["pos_3d"][0] - 5.0:
+                    self.get_logger().info(
+                        "横向对齐检测到更右的目标 (%.1fmm > %.1fmm)，重新锁定" % (
+                            rightmost["pos_3d"][0], stable["pos_3d"][0]))
+                    # 重建 tracker 并锁定最右的
+                    self.tracker = TargetTracker(
+                        avg_window=int(cfg_g["distance_avg_window"]),
+                        lost_frames_max=int(cfg_g["lost_frames_max"]),
+                    )
+                    self.tracker.update([rightmost])
+                    # 递归调用，等待新 tracker 稳定（标记为已重建）
+                    return self._detect_stable_after_move(True, cfg_g)
+
+        return stable
 
     # ------------------------------------------------------------------ #
     # 接近与抓取
@@ -599,8 +663,11 @@ class GraspTaskNode(Node):
 
         # phase_3: align
         self._publish_state("ALIGNING")
-        if not self._align_laterally(stable):
-            return self._fail("ALIGN_FAILED")
+        if self.enable_lateral_align:
+            if not self._align_laterally(stable):
+                return self._fail("ALIGN_FAILED")
+        else:
+            self.get_logger().info("横向对齐已禁用，跳过对齐阶段")
 
         # phase_4: grasp
         self._publish_state("GRASPING")

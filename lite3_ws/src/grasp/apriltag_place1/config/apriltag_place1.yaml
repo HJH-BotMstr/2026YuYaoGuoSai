@@ -48,7 +48,7 @@ apriltag_place1_node:
     # ── pose_controller 健康检查（2026-08-14 新增）─────────────────────────────
     # 运动链路看门狗：如果 /cmd_vel 或 /leg_odom2 超过此时长未收到，
     # 且当前正在等待运动完成，则认为 pose_controller 异常，发送 cancel 重置
-    motion_watchdog_timeout_s: 3.0
+    motion_watchdog_timeout_s: 5.0     # 从 3.0 增加到 5.0，避免旋转运动误判
     # 重置后的恢复等待时间（秒）
     motion_reset_recovery_s: 1.0
 

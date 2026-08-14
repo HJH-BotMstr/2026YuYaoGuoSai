@@ -28,3 +28,7 @@ grasp_task:
     # ─── 多轮循环支持（默认 1 保持向后兼容，abcd_task launch 里覆写为 4）──
     max_rounds: 1
     inter_round_wait_s: 0.5
+
+    # ─── 横向对齐开关 ────────────────────────────────────────────────
+    # 启用后，在抓取前会执行横向移动对齐；关闭后跳过横向对齐直接抓取
+    enable_lateral_align: false

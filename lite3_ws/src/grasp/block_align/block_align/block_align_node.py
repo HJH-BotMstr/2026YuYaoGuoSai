@@ -41,7 +41,6 @@ _TOOLS_GRASP_DEFAULT = os.path.expanduser("~/2026YuYaoGuoSai/tools/grasp")
 # ─── 状态常量 ──────────────────────────────────────────────────────────────── #
 STATE_WAIT_TRIGGER  = "wait_trigger"
 STATE_WAIT_DETECT   = "wait_detect"
-STATE_SEARCH        = "search"          # 新增：wait_detect 超时后横向扫描
 STATE_LATERAL_ALIGN = "lateral_align"
 STATE_APPROACH      = "approach"
 STATE_DONE          = "done"
@@ -82,12 +81,6 @@ class BlockAlignNode(Node):
         # 现场实测后调整；默认 -1（X_cam>0 偏右 → y=−X_cam/1000 → 狗向右）
         self.declare_parameter("lateral_polarity",       -1)
         self.declare_parameter("show_debug_window",      False)
-        # ── 横向搜索（wait_detect 超时后触发）──
-        # 搜索方向：与 lateral_polarity 相反的 y 方向（正常抓取时 polarity=-1，
-        # 目标偏右→往右移；搜索时 polarity=-1 → 从右往左扫，符合设计文档 §7.2）
-        self.declare_parameter("search_step_m",          0.10)
-        self.declare_parameter("search_max_steps",       10)
-        self.declare_parameter("search_timeout_s",       60.0)
         # ── 目标颜色过滤（2026-08-12 新增）──
         # "red" | "green" | "" (空字符串 = 检测所有颜色，向后兼容)
         # abcd_task_node 会根据字母配置通过 set_parameters 动态设置
@@ -109,9 +102,6 @@ class BlockAlignNode(Node):
         self._reset_recovery   = float(self.get_parameter("motion_reset_recovery_s").value)
         self._lat_polarity   = int(self.get_parameter("lateral_polarity").value)
         self._show_debug     = bool(self.get_parameter("show_debug_window").value)
-        self._search_step_m      = float(self.get_parameter("search_step_m").value)
-        self._search_max_steps   = int(self.get_parameter("search_max_steps").value)
-        self._search_timeout_s   = float(self.get_parameter("search_timeout_s").value)
         self._target_color_param = str(self.get_parameter("target_color").value)
         # 空字符串转为 None（向后兼容：不指定颜色时检测所有）
         self._target_color = self._target_color_param if self._target_color_param else None
@@ -187,9 +177,6 @@ class BlockAlignNode(Node):
         self._phase_busy = False
         self._settle_tracker_ready = False   # 见 _do_lateral_align
         self._detect_deadline = float("inf")
-        # 横向搜索状态
-        self._search_steps_done  = 0
-        self._search_deadline    = float("inf")
 
         # 主循环 10 Hz
         self._timer = self.create_timer(0.1, self._main_loop)
@@ -249,8 +236,6 @@ class BlockAlignNode(Node):
                     self._cmdvel_motion_started = False
                     self._move_ignored_warned   = False
                     self._detect_deadline = time.monotonic() + self._detect_timeout
-                    self._search_steps_done = 0
-                    self._search_deadline    = float("inf")
             else:
                 if self._state not in (STATE_WAIT_TRIGGER, STATE_DONE):
                     self.get_logger().info("收到取消信号，回到 wait_trigger")
@@ -444,8 +429,6 @@ class BlockAlignNode(Node):
 
         if state == STATE_WAIT_DETECT:
             self._do_wait_detect(frame)
-        elif state == STATE_SEARCH:
-            self._do_search(frame)
         elif state == STATE_LATERAL_ALIGN:
             self._do_lateral_align(frame)
         elif state == STATE_APPROACH:
@@ -455,33 +438,19 @@ class BlockAlignNode(Node):
 
     def _do_wait_detect(self, frame: np.ndarray):
         if time.monotonic() > getattr(self, "_detect_deadline", float("inf")):
-            # 检测超时：进入横向搜索（每步 search_step_m，最多 search_max_steps 步）
+            # 检测超时：释放摄像头后直接进入抓取阶段（不报错，允许盲抓）
             self.get_logger().warning(
-                "wait_detect 超时（%.1fs），进入 search 横向搜索" % self._detect_timeout)
-            # 先检查运动链路——搜索要靠 /move
-            ready, issues = self._check_motion_pipeline()
-            if not ready:
-                self.get_logger().error(
-                    "运动链路未就绪，无法搜索：%s" % "；".join(issues))
-                with self._lock:
-                    self._state = STATE_ERROR
-                return
+                "wait_detect 超时（%.1fs），未检测到色块，释放摄像头后触发抓取阶段" % self._detect_timeout)
+            # 先释放摄像头，避免与 grasp_task 竞争 /dev/video0
+            if self._cap is not None:
+                try:
+                    self._cap.release()
+                except Exception as e:
+                    self.get_logger().warning("释放摄像头异常: %s" % (e,))
+                self._cap = None
+            self._emit_grasp_start()
             with self._lock:
-                self._state = STATE_SEARCH
-                self._search_steps_done  = 0
-                self._phase_busy         = False
-                self._settle_tracker_ready = False
-                # 每步预算 = move_timeout + 1s 缓冲，兜住整个搜索最长耗时
-                per_step_budget = self._move_timeout + 1.0
-                self._search_deadline = time.monotonic() + min(
-                    self._search_timeout_s,
-                    self._search_max_steps * per_step_budget + 5.0,
-                )
-                # 搜索开始前重建 tracker，避免带着历史噪声
-                self._tracker = self._TargetTracker(
-                    avg_window=self._tracker_avg,
-                    lost_frames_max=self._tracker_lost,
-                )
+                self._state = STATE_DONE
             return
 
         stable = self._detect_frame(frame)
@@ -527,109 +496,6 @@ class BlockAlignNode(Node):
             self._app_rounds = 0
             self._phase_busy = False
             self._state      = STATE_LATERAL_ALIGN
-
-    # ──────────────────────────── search ────────────────────────────────────── #
-
-    def _do_search(self, frame: np.ndarray):
-        """
-        横向搜索：wait_detect 超时后触发。每步沿 body y 方向平移 search_step_m，
-        运动停止后重新检测一帧；发现色块立即转入 lateral_align，否则继续下一步。
-
-        搜索方向由 lateral_polarity 反号决定：
-          - lateral_polarity=-1（默认，目标偏右→向右移）→ 搜索沿 +y（body 左）
-            即从右往左扫，与设计文档 §7.2 "从右往左"一致。
-          - lateral_polarity=+1 → 搜索沿 -y（body 右）。
-        """
-        now = time.monotonic()
-
-        # 全局搜索超时
-        if now > self._search_deadline:
-            self.get_logger().error(
-                "search 超时（>%ds），未找到色块" % int(self._search_timeout_s))
-            with self._lock:
-                self._state = STATE_ERROR
-            return
-
-        # 步数用尽
-        if self._search_steps_done >= self._search_max_steps:
-            self.get_logger().error(
-                "search 步数用尽（%d 步 × %.2fm），未找到色块" % (
-                    self._search_max_steps, self._search_step_m))
-            with self._lock:
-                self._state = STATE_ERROR
-            return
-
-        # 正在运动中：等 cmd_vel 归零后再检测
-        if self._phase_busy:
-            # 运动链路看门狗检查
-            if self._check_motion_watchdog():
-                self._reset_pose_controller()
-                self._phase_busy = False
-                self._settle_tracker_ready = False
-                # 重新尝试当前步
-                return
-
-            if not self._is_cmd_vel_zero():
-                return
-            # 运动停止：重建 tracker 一次，然后连续多帧才会 stable
-            if not self._settle_tracker_ready:
-                self._tracker = self._TargetTracker(
-                    avg_window=self._tracker_avg,
-                    lost_frames_max=self._tracker_lost,
-                )
-                self._settle_tracker_ready = True
-
-            stable = self._detect_frame(frame)
-            if stable is None:
-                return  # tracker 未稳定，继续等下一帧
-
-            # 修复 2026-08-14：确保锁定最右边的目标
-            # 场景：两个同色方块同框时，tracker 可能锁定了靠中心的（不是最右的）
-            # 解决：检测到稳定目标后，如果当前帧有多个候选且 tracker 没锁定最右的，重新锁定
-            all_candidates = self._detector.detect_all(frame)
-            if len(all_candidates) >= 2:
-                rightmost = max(all_candidates, key=lambda r: r["pos_3d"][0])
-                # 判断 tracker 当前锁定的是否是最右的
-                if stable["pos_3d"][0] < rightmost["pos_3d"][0] - 5.0:  # 5mm 容差
-                    self.get_logger().info(
-                        "search 检测到更右的目标 (%.1fmm > %.1fmm)，重新锁定" % (
-                            rightmost["pos_3d"][0], stable["pos_3d"][0]))
-                    # 重建 tracker 并锁定最右的
-                    self._tracker = self._TargetTracker(
-                        avg_window=self._tracker_avg,
-                        lost_frames_max=self._tracker_lost,
-                    )
-                    self._tracker.update([rightmost])
-                    self._settle_tracker_ready = False
-                    return  # 等待下一帧稳定
-
-            X_cam, Y_cam, _ = stable["pos_3d"]
-            self.get_logger().info(
-                "search 第 %d 步命中: X_cam=%.1fmm  Y_cam=%.1fmm  dist=%.1fmm" % (
-                    self._search_steps_done, X_cam, Y_cam, stable["distance_mm"]))
-            with self._lock:
-                self._last_pose  = stable
-                self._lat_rounds = 0
-                self._app_rounds = 0
-                self._phase_busy = False
-                self._settle_tracker_ready = False
-                self._state     = STATE_LATERAL_ALIGN
-            return
-
-        # 空闲：发下一步搜索指令
-        # 修复 2026-08-14：搜索方向改为"从左往右"（body -y 方向），
-        # 优先覆盖右侧区域，配合 TargetTracker 的 max(X_cam) 确保锁定最右边的目标
-        # lateral_polarity=-1 时向 body -y 方向搜（从左往右）→ 取 +polarity
-        y_dir = self._lat_polarity
-        y_move = y_dir * self._search_step_m
-        self._search_steps_done += 1
-        self.get_logger().info(
-            "search 步 %d/%d: 发 /move y=%.3f m (polarity=%d, dir=%+d)" % (
-                self._search_steps_done, self._search_max_steps,
-                y_move, self._lat_polarity, y_dir))
-        self._send_move(0.0, y_move, 0.0)
-        self._phase_busy = True
-        self._settle_tracker_ready = False
 
     # ──────────────────────────── lateral_align ─────────────────────────────── #
 
@@ -753,11 +619,26 @@ class BlockAlignNode(Node):
             return
 
         self._app_rounds += 1
+
+        # 阻尼系数：只走误差的 70%，防止 pose_controller 超调
+        damped_delta = delta * 0.7
+        # 限幅：单次前进最大 15cm，防止晃出视野
+        damped_delta = max(-0.15, min(0.15, damped_delta))
+        # 最小步长：小于 2cm 不走了，直接认为到位
+        if abs(damped_delta) < 0.02:
+            self.get_logger().info(
+                "approach 完成（剩余误差 %.3fm < 2cm 阈值）: Y_cam=%.1fmm  dist=%.3fm" % (
+                    delta, Y_cam, dist_m))
+            self._emit_grasp_start()
+            with self._lock:
+                self._state = STATE_DONE
+            return
+
         self.get_logger().info(
-            "approach 轮次 %d: Y_cam=%.1fmm  delta=%.3fm" % (
-                self._app_rounds, Y_cam, delta))
+            "approach 轮次 %d: Y_cam=%.1fmm  delta=%.3fm → 阻尼+限幅后=%.3fm" % (
+                self._app_rounds, Y_cam, delta, damped_delta))
         # 见 _do_lateral 注释：reset_origin 与 /move 竞态会使 /move 被作废
-        self._send_move(delta, 0.0, 0.0)
+        self._send_move(damped_delta, 0.0, 0.0)
         self._phase_busy = True
 
     # ──────────────────────────── 析构 ──────────────────────────────────────── #

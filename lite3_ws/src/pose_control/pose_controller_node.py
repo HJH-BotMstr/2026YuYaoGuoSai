@@ -103,11 +103,11 @@ class PoseController(Node):
 
         # 到位阈值。当相关误差都小于该阈值时，控制器认为已到达目标并停止。
         self.declare_parameter("dist_threshold", 0.05)  # 位置到位阈值（m）
-        self.declare_parameter("yaw_threshold", 0.05)   # 航向到位阈值（rad）
+        self.declare_parameter("yaw_threshold", 0.052)  # 航向到位阈值（rad），约3.0°，与apriltag对齐
 
         # 航向死区：当 |航向误差| <= angle_threshold 时，积分器清零、输出为零。
         # deadband_hysteresis 放大退出阈值，避免在死区边界抖动。
-        self.declare_parameter("angle_threshold", 0.01)
+        self.declare_parameter("angle_threshold", 0.035)  # 约2.0°，避免过早进入死区
         self.declare_parameter("deadband_hysteresis", 1.5)
 
         # 时序 / 安全。
