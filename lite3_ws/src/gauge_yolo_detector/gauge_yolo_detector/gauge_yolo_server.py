@@ -23,6 +23,8 @@ import time
 from pathlib import Path
 
 import cv2
+import socket
+import struct
 import rclpy
 from rclpy.node import Node
 
@@ -43,12 +45,34 @@ from gauge_yolo_new import (
 )
 
 
+def send_head_up_command():
+    """
+    发送语音指令让狗抬头（指令码 0x21010C0A, 指令值 9）
+    运动主机 IP: 192.168.1.120, UDP 端口: 43893
+    """
+    robot_ip = "192.168.1.120"
+    robot_port = 43893
+    cmd_code = 0x21010C0A  # 语音指令码
+    cmd_value = 9          # 抬头
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # UDP 数据包格式：<IiI (code, value, 0)
+        data = struct.pack("<IiI", cmd_code, cmd_value, 0)
+        sock.sendto(data, (robot_ip, robot_port))
+        return True
+    except Exception as e:
+        return False
+    finally:
+        sock.close()
+
+
 class GaugeYoloServerNode(Node):
     def __init__(self):
         super().__init__('gauge_yolo_server')
 
         # ========== 参数声明 ==========
-        self.declare_parameter('camera_id', 0)
+        self.declare_parameter('camera_id', 6)
         self.declare_parameter('width', 640)
         self.declare_parameter('height', 480)
         self.declare_parameter('preheat_frames', 80)
@@ -95,7 +119,15 @@ class GaugeYoloServerNode(Node):
             self.get_logger().error(f'模型加载失败: {e}')
             raise
 
-        # ========== 2. 初始化并预热摄像头 ==========
+        # ========== 2. 发送抬头指令，避免仪表盘变形导致识别失败 ==========
+        self.get_logger().info('发送抬头指令到运动主机...')
+        if send_head_up_command():
+            self.get_logger().info('✓ 抬头指令已发送，等待 3 秒让狗完成动作')
+            time.sleep(3.0)
+        else:
+            self.get_logger().warn('⚠ 抬头指令发送失败，继续初始化（可能影响识别效果）')
+
+        # ========== 3. 初始化并预热摄像头 ==========
         self.get_logger().info(f'初始化摄像头 /dev/video{camera_id} ...')
         self.cap = init_camera(camera_id, width, height)
         if self.cap is None or not self.cap.isOpened():

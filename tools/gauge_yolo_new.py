@@ -615,7 +615,7 @@ class AsyncYOLOGaugeProcessor:
 
 def main():
     parser = argparse.ArgumentParser(description='YOLOv8 仪表盘识别 Jetson 版')
-    parser.add_argument('--camera', type=int, default=0, help='摄像头编号，默认 0')
+    parser.add_argument('--camera', type=int, default=6, help='摄像头编号，默认 6')
     parser.add_argument('--width', type=int, default=640)
     parser.add_argument('--height', type=int, default=480)
     parser.add_argument('--models-dir', type=str, default=str(DEFAULT_MODELS_DIR),

@@ -94,6 +94,9 @@ class GraspTaskNode(Node):
         # inter_round_wait_s 是两轮之间的短暂间隔，让 latched 消息/上层编排刷新。
         self.declare_parameter("max_rounds", 1)
         self.declare_parameter("inter_round_wait_s", 0.5)
+        # ROI 检测区域限制（仅在 grasp_task 检测阶段使用，避免左右两侧干扰色块）
+        self.declare_parameter("use_roi", True)
+        self.declare_parameter("roi_center_ratio", 0.6)
 
         # 加载配置并强制 robot 模式
         self.cfg = load_config(self)
@@ -104,6 +107,10 @@ class GraspTaskNode(Node):
         else:
             self.dry_run = bool(self.dry_run_param)
         self.cv_show = self.get_parameter("cv_show").value
+
+        # ROI 参数
+        self.use_roi = self.get_parameter("use_roi").value
+        self.roi_center_ratio = self.get_parameter("roi_center_ratio").value
 
         self._lock = threading.Lock()
         self._start_event = threading.Event()
@@ -300,6 +307,44 @@ class GraspTaskNode(Node):
     # ------------------------------------------------------------------ #
     # 视觉检测
     # ------------------------------------------------------------------ #
+    def _apply_roi(self, frame):
+        """
+        对画面应用 ROI 裁剪，只保留中心区域。
+        返回：裁剪后的 frame, (x_offset, y_offset)
+        """
+        if not self.use_roi:
+            return frame, (0, 0)
+
+        h, w = frame.shape[:2]
+        roi_w = int(w * self.roi_center_ratio)
+        roi_h = int(h * self.roi_center_ratio)
+        x_offset = (w - roi_w) // 2
+        y_offset = (h - roi_h) // 2
+
+        roi_frame = frame[y_offset:y_offset + roi_h, x_offset:x_offset + roi_w]
+        return roi_frame, (x_offset, y_offset)
+
+    def _restore_roi_coords(self, candidates: list, offset: tuple) -> list:
+        """
+        将 ROI 内检测到的坐标还原到原始画面坐标系。
+        candidates: 在 ROI 内检测到的结果列表
+        offset: (x_offset, y_offset)
+        返回：坐标还原后的结果列表
+        """
+        if not self.use_roi or not candidates:
+            return candidates
+
+        x_off, y_off = offset
+        restored = []
+        for c in candidates:
+            c_copy = c.copy()
+            # 还原 bbox
+            (x1, y1), (x2, y2) = c_copy["bbox"]
+            c_copy["bbox"] = ((x1 + x_off, y1 + y_off), (x2 + x_off, y2 + y_off))
+            # pos_3d 不需要调整（3D坐标系与图像坐标系独立）
+            restored.append(c_copy)
+        return restored
+
     def _detect_stable(self) -> dict:
         """
         多帧检测，TargetTracker 滑动均值稳定后返回稳定目标读数。
@@ -317,7 +362,14 @@ class GraspTaskNode(Node):
 
         timeout = float(self.cfg["grasp"]["detect_timeout"])
         deadline = time.monotonic() + timeout
-        self.get_logger().info("开始视觉识别，超时 %.1fs" % (timeout))
+
+        # 首次启动时输出 ROI 状态
+        if self.use_roi:
+            self.get_logger().info(
+                f"开始视觉识别，超时 {timeout:.1f}s（ROI 已启用：中心 {self.roi_center_ratio*100:.0f}%）"
+            )
+        else:
+            self.get_logger().info(f"开始视觉识别，超时 {timeout:.1f}s")
 
         while time.monotonic() < deadline:
             if self._check_estop():
@@ -328,12 +380,40 @@ class GraspTaskNode(Node):
                 self.get_logger().warning("摄像头读帧失败，跳过")
                 continue
 
-            candidates = self.detector.detect_all(frame)
+            # 应用 ROI 裁剪（仅在 grasp_task 检测阶段，避免左右两侧干扰色块）
+            roi_frame, roi_offset = self._apply_roi(frame)
+
+            # 在 ROI 区域内检测
+            candidates = self.detector.detect_all(roi_frame)
+
+            # 还原坐标到原始画面（用于可视化和后续处理）
+            candidates = self._restore_roi_coords(candidates, roi_offset)
+
+            # 当检测到多个同色候选时，记录选择逻辑（帮助调试）
+            if len(candidates) > 1:
+                x_values = [c["pos_3d"][0] for c in candidates]
+                self.get_logger().info(
+                    f"检测到 {len(candidates)} 个候选色块，X_cam 值={x_values}，"
+                    f"将锁定最右边的 (X_cam={max(x_values):.1f}mm)"
+                )
+
             self.tracker.update(candidates)
 
             if self.cv_show:
-                vis_result = candidates[0] if candidates else None
+                # 可视化显示 tracker 当前锁定的目标（最右边的），而非 candidates[0]
+                vis_result = self.tracker.get_current_target()
                 vis = self.detector.visualize(frame.copy(), vis_result)
+
+                # 在可视化上绘制 ROI 边界（绿色矩形）
+                if self.use_roi:
+                    h, w = frame.shape[:2]
+                    x_off, y_off = roi_offset
+                    roi_w = int(w * self.roi_center_ratio)
+                    roi_h = int(h * self.roi_center_ratio)
+                    cv2.rectangle(vis, (x_off, y_off),
+                                (x_off + roi_w, y_off + roi_h),
+                                (0, 255, 0), 2)
+
                 cv2.imshow("arm_cam", vis)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     return None
