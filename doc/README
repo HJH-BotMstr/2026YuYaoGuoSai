@@ -1,0 +1,77 @@
+一、怎么录制一条路径
+# 1. 备份现有路径，重录如果不满意可以回滚
+cp tools/waypoints.json tools/waypoints.json.bak
+
+# 2. 确认底层驱动已经在跑，odom 有数据
+ros2 topic hz /leg_odom2       # 应该稳定在几十 Hz
+
+录制：
+用手柄把狗开到物理起点（真正上场时准备起步的那个位置和朝向）。
+松开摇杆，等狗完全停稳（关键，抖动会让点位偏几厘米）。
+在 PC 上另开一个终端跑：
+
+cd ~/2026YuYaoGuoSai
+python3 tools/way_point.py record tools/waypoints.json
+
+按 S 记起点。
+手柄开到下一个点 → 停稳 → 回 PC 按 A。重复。
+最后一点按完 A 再按 E 保存退出。终端会打印所有 move 的 x/y/theta，扫一眼看有没有明显异常（比如 theta 出现 ±180° 突变）。
+验证
+
+把狗放回你在第 1 步定的物理起点（因为 broadcast 开头会发 reset_origin，之后所有 move 都是相对量，只要起点摆对，绝对世界坐标可以不管），然后：
+python3 tools/way_point.py broadcast tools/waypoints.json
+看整条路径能不能跑到位。跑歪了就 cp tools/waypoints.json.bak tools/waypoints.json 回滚重录。
+
+几个容易踩的坑
+按键前必须停稳：_add_waypoint 直接读 /leg_odom2 当前值，狗在减速阶段读到的位置是滞后的。
+一次录完，不要中途歇太久：/leg_odom2 是纯腿式里程，站着不动也会慢慢漂，录 15 个点用了半小时的话末尾误差就上来了。走位尽量利落。
+起点一致性：绝对坐标其实不重要（moves 是身体坐标系相对量），但起点物理位姿决定整段路径在场地里的落点，录制时和比赛时起点要对齐（一般对着起始区边线摆狗）。
+原地转向的点：看 waypoints.json 里第 1、3 点那种位置几乎不变、yaw 差 90° 的 pair，录的时候就是"到位停稳按 A → 原地转到目标朝向再停稳按 A"，两次 A 之间只转不移。这套流程本身就支持，不用特殊处理。
+一个人操作：如果你 PC 是笔记本，最舒服的姿势是笔记本放在腰高的推车/凳子上，右手手柄开狗到点位，左手过去按一下 A。两个人配合更快，一个专职开狗一个盯着键盘。
+
+二、抓取部分测试
+
+方法 1：用 abcd_task 的 start_from + max_rounds=1（推荐）
+最省事，复用现有编排：
+
+
+# 1. 先把狗手动/摇杆开到中转点（或者直接在中转点上电）
+# 2. 在 abcd_config.yaml 里只标定 A 的 task_x/y/yaw（其它字母随便填）
+# 3. 启动 abcd_task，只跑 A 这一轮，跑到 block_align 检测成功就停
+ros2 launch abcd_task abcd_task.launch.py \
+  start_from:=A \
+  max_rounds:=1 \
+  skip_on_error:=true
+它会执行：
+
+NAV_TO_TASK_1 → 从中转点走到 A 准备位
+SET_TAG_ID → 下发 target_tag_id=0 给 apriltag_place1
+TRIGGER_TAG_ALIGN → 拉起 apriltag_place1 子进程 + 发 /apriltag_place1/start
+WAIT_TAG_DONE → 等 /apriltag_place1/done（狗会前进调整到 tag 前 1.4m）
+TRIGGER_BLOCK_ALIGN → 拉起 block_align 子进程 + 发 /block_align/trigger
+WAIT_DETECT → 等 /block_align/state == "lateral_align" 或 "move_forward"
+如果 block_align 识别到色块，你会看到日志 WAIT_DETECT 完成：{color} 检测成功，此时狗已经横向对齐色块了。abcd_task 会继续走下去（SIGNAL_GRASP → grasp_task 抓取），但你可以 Ctrl+C 手动停，或者在 abcd_task.yaml 里把 grasp_timeout_s 改成 1 秒让它快速超时跳过抓取。
+
+优点：
+
+完全复用 abcd_task 的子进程管理 + 超时兜底
+不用写新代码
+可以用 dry_run:=true 先只跑导航验证 task_point 对不对
+调试时看什么：
+
+
+# 终端 1：launch
+ros2 launch abcd_task abcd_task.launch.py start_from:=A max_rounds:=1
+
+# 终端 2：监控 block_align 状态
+ros2 topic echo /block_align/state
+
+# 终端 3：监控 apriltag_place1 进度
+ros2 topic echo /apriltag_place1/done
+
+cd /home/ysc/2026YuYaoGuoSai/lite3_ws
+source install/setup.bash
+source /opt/ros/foxy/setup.bash
+ros2 launch abcd_task abcd_task.launch.py   start_from:=A   max_rounds:=1   skip_on_error:=true
+
+ros2 topic pub --once /pose_control/command std_msgs/msg/String "{data: 'reset_origin'}"

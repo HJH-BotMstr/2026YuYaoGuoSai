@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>grasp_flow</name>
+  <version>0.1.0</version>
+  <description>抓取全流程编排：狗自动模式 → 机械臂就绪 → AprilTag 对齐 → 抓取 → 人工搬运 → 放置对齐(命令行人工触发) → 放置</description>
+  <maintainer email="ysc@todo.todo">ysc</maintainer>
+  <license>TODO</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>nav_msgs</depend>
+
+  <exec_depend>apriltag_place1</exec_depend>
+  <exec_depend>letter_place_align</exec_depend>
+  <exec_depend>grasp_task</exec_depend>
+  <exec_depend>pose_control</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

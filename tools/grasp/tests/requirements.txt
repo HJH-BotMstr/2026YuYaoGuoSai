@@ -1,0 +1,56 @@
+#test
+
+cd /home/fishros/2026YuYaoGuoSai/tools/grasp
+python3 /home/fishros/2026YuYaoGuoSai/tools/pc_test_arm_ik.py
+
+python3 tests/test_arm_grasp.py --mode pose
+
+python3 tests/test_arm_grasp.py --mode gripper
+
+python3 tests/test_arm_grasp.py --mode grasp --dis 220 --height 25
+
+python3 tests/main.py 
+
+sudo chmod 666 /dev/ttyUSB0
+
+夹爪调试
+cd /home/ysc/2026YuYaoGuoSai/tools/grasp && python3 -c "
+import sys, time, yaml
+sys.path.insert(0, '.')
+from utils.ArmController import ArmController
+cfg = yaml.safe_load(open('config.yaml'))
+arm_cfg = {**cfg['arm'], 'arm_serial_baud': cfg['hardware']['arm_serial_baud']}
+arm = ArmController(device=cfg['hardware']['arm_serial_port'], cfg=arm_cfg)
+ph = arm.packetHandler
+print('输入 0-4095 数值回车下发；q 退出')
+print('当前位置:', arm.read_positions(ids=(1,))[1])
+try:
+    while True:
+        s = input('gripper> ').strip()
+        if s.lower() in ('q','quit','exit'): break
+        if not s: continue
+        try: v = int(s)
+        except: print('  只接受整数或 q'); continue
+        if not (0 <= v <= 4095): print('  范围 0-4095'); continue
+        ph.WritePosEx(1, v, arm._speed, arm._acc)
+        time.sleep(1.2)
+        print(f'  目标={v}  实际={arm.read_positions(ids=(1,))[1]}')
+finally:
+    arm.finalize()
+"
+
+最小闭合：2337
+最大张角：1800
+
+张开：
+cd /home/ysc/2026YuYaoGuoSai/tools/grasp && python3 -c "
+import sys, time, yaml
+sys.path.insert(0, '.')
+from utils.ArmController import ArmController
+cfg = yaml.safe_load(open('config.yaml'))
+arm_cfg = {**cfg['arm'], 'arm_serial_baud': cfg['hardware']['arm_serial_baud']}
+arm = ArmController(device=cfg['hardware']['arm_serial_port'], cfg=arm_cfg)
+arm.open_gripper(); time.sleep(2)
+print('实际位置:', arm.read_positions(ids=(1,)))
+arm.finalize()
+"
