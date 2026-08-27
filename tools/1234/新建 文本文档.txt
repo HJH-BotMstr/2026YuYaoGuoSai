@@ -1,0 +1,19 @@
+cd /home/ysc/2026YuYaoGuoSai/lite3_ws
+source /opt/ros/foxy/setup.bash
+colcon build --packages-select gauge_yolo_detector --symlink-install
+source install/setup.bash
+
+
+# 终端1：启动节点（加载两个 engine 约 30~60 秒，看到“服务 /detect_gauge_yolo 已创建”即就绪）
+cd /home/ysc/2026YuYaoGuoSai/lite3_ws
+source /opt/ros/foxy/setup.bash
+source install/setup.bash
+ros2 run gauge_yolo_detector gauge_yolo_server
+
+# 终端2：调服务测试
+source /home/ysc/2026YuYaoGuoSai/lite3_ws/install/setup.bash
+ros2 service call /detect_gauge_yolo gauge_detector_interfaces/srv/GaugeDetect "{}"
+
+
+source ~/yolov8_env/bin/activate
+python /home/ysc/2026YuYaoGuoSai/tools/gauge_yolo_new_v2.py --debug-letter

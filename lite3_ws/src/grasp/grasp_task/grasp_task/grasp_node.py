@@ -2,8 +2,12 @@
 """
 grasp_task 主节点：把 tools/grasp 的 8-phase 抓取流程封装为 ROS2 节点。
 
+2026-08-15 合并 block_align 逻辑：
+  将 block_align_node 的色块对齐功能合并到 grasp_task，消除摄像头重复开关延迟。
+  新增 BLOCK_ALIGNING 阶段，在 DETECTING 之前执行视觉对齐和接近。
+
 对外接口：
-  sub /grasp/start  (std_msgs/Bool)   : 启动抓取流程
+  sub /grasp/start  (std_msgs/Bool)   : 启动抓取流程（包含 block_align）
   sub /grasp/place  (std_msgs/String): 触发放置，携带 A/B/C/D
   sub /grasp/set_zone (std_msgs/String): 仅设置目标放置区
   sub /cmd_vel      (geometry_msgs/Twist): 判断 pose_control 是否到位
@@ -97,8 +101,19 @@ class GraspTaskNode(Node):
         # ROI 检测区域限制（仅在 grasp_task 检测阶段使用，避免左右两侧干扰色块）
         self.declare_parameter("use_roi", True)
         self.declare_parameter("roi_center_ratio", 0.6)
-        # 横向对齐开关
+        # 横向对齐开关（已废弃，合并 block_align 后始终执行对齐）
         self.declare_parameter("enable_lateral_align", True)
+
+        # ── 2026-08-15: block_align 合并参数 ──────────────────────────────
+        self.declare_parameter("enable_block_align", True)          # 是否启用 block_align 阶段
+        self.declare_parameter("block_align_target_distance_m", 0.25)  # block_align 目标停止距离
+        self.declare_parameter("block_align_lateral_threshold_mm", 15.0)  # 横向对齐阈值
+        self.declare_parameter("block_align_distance_threshold_m", 0.02)  # 前进距离阈值
+        self.declare_parameter("block_align_max_rounds", 5)         # 对齐最大轮次
+        self.declare_parameter("block_align_detect_timeout_s", 15.0)  # 检测超时
+        self.declare_parameter("block_align_lateral_polarity", -1)  # 横向极性
+        self.declare_parameter("block_align_motion_watchdog_s", 3.0)  # 运动看门狗超时
+        self.declare_parameter("target_color", "")                  # 目标颜色过滤 "red"/"green"/""
 
         # 加载配置并强制 robot 模式
         self.cfg = load_config(self)
@@ -116,6 +131,29 @@ class GraspTaskNode(Node):
 
         # 横向对齐开关
         self.enable_lateral_align = self.get_parameter("enable_lateral_align").value
+
+        # ── 2026-08-15: block_align 合并参数读取 ─────────────────────────
+        self.enable_block_align = self.get_parameter("enable_block_align").value
+        self.block_align_target_dist = self.get_parameter("block_align_target_distance_m").value
+        self.block_align_lat_thr_mm = self.get_parameter("block_align_lateral_threshold_mm").value
+        self.block_align_dist_thr = self.get_parameter("block_align_distance_threshold_m").value
+        self.block_align_max_rounds = self.get_parameter("block_align_max_rounds").value
+        self.block_align_detect_timeout = self.get_parameter("block_align_detect_timeout_s").value
+        self.block_align_lat_polarity = int(self.get_parameter("block_align_lateral_polarity").value)
+        self.block_align_watchdog_timeout = self.get_parameter("block_align_motion_watchdog_s").value
+
+        target_color_param = str(self.get_parameter("target_color").value)
+        self.target_color = target_color_param if target_color_param else None
+
+        # block_align 运行时状态
+        self._ba_lat_rounds = 0
+        self._ba_app_rounds = 0
+        self._ba_phase_busy = False
+        self._ba_settle_tracker_ready = False
+        self._ba_last_pipeline_healthy_time = 0.0
+        self._ba_cmdvel_motion_started = False
+        self._ba_last_move_time = 0.0
+        self._ba_move_ignored_warned = False
 
         self._lock = threading.Lock()
         self._start_event = threading.Event()
@@ -142,6 +180,7 @@ class GraspTaskNode(Node):
             zero_duration_s=motion_zero_dur,
             timeout_s=motion_timeout,
         )
+        self._motion_stop_timeout_s = motion_timeout  # block_align 阶段兜底超时复用
 
         # 订阅
         self.create_subscription(BoolMsg, self._start_topic, self._on_start, 10)
@@ -207,6 +246,11 @@ class GraspTaskNode(Node):
 
     def _on_cmd_vel(self, msg: Twist):
         self._motion_waiter.on_cmd_vel(msg)
+        # 2026-08-15: 更新 block_align 运动状态
+        speed = abs(msg.linear.x) + abs(msg.linear.y) + abs(msg.angular.z)
+        if speed >= 0.01 and not self._ba_cmdvel_motion_started:
+            self._ba_cmdvel_motion_started = True
+        self._ba_last_pipeline_healthy_time = time.monotonic()
 
     def _on_odom(self, msg: Odometry):
         with self._lock:
@@ -246,6 +290,16 @@ class GraspTaskNode(Node):
             self.get_logger().error("机械臂初始化失败: %s" % (e))
             raise
 
+        # 2026-08-15: 为 block_align 创建独立的 detector（支持颜色过滤）
+        if self.target_color:
+            self.get_logger().info(f"BlockDetection 目标颜色过滤: {self.target_color}")
+            # block_align 专用检测器，启用颜色过滤
+            from utils.BlockDetection import BlockDetection as BlockDetectionFiltered
+            self.ba_detector = BlockDetectionFiltered({**cfg["detection"]}, target_color=self.target_color)
+        else:
+            # 无颜色过滤时复用原检测器
+            self.ba_detector = BlockDetection({**cfg["detection"]})
+
         self.detector = BlockDetection({**cfg["detection"]})
         cfg_g = cfg["grasp"]
         self.tracker = TargetTracker(
@@ -263,12 +317,13 @@ class GraspTaskNode(Node):
             return
         if self.arm_cam is not None:
             return
-        # 2026-08-14: 等待 block_align 子进程完全退出并释放摄像头资源
-        # block_align 在发布 /grasp/start 后会立即 cap.release()，
-        # 但进程本身要等 abcd_task 发 SIGTERM 才退出。
-        # 这里等待 2s，确保摄像头驱动完全释放，避免资源竞争。
-        self.get_logger().info("等待 2s，确保 block_align 释放摄像头...")
-        time.sleep(2.0)
+        # 2026-08-15: 合并 block_align 后，摄像头在 BLOCK_ALIGNING 阶段已打开，
+        # DETECTING 阶段无需等待，直接使用。如果摄像头未打开（enable_block_align=False），
+        # 则按原逻辑打开。
+        if not self.enable_block_align:
+            # 原逻辑：等待 block_align 子进程退出（已废弃）
+            self.get_logger().info("等待 2s，确保 block_align 释放摄像头...")
+            time.sleep(2.0)
         self.arm_cam = _open_camera(self._cam_device, logger=self.get_logger())
         if self.arm_cam is None:
             raise RuntimeError(f"机械臂摄像头打开失败: {self._cam_device}")
@@ -549,6 +604,275 @@ class GraspTaskNode(Node):
         return stable
 
     # ------------------------------------------------------------------ #
+    # block_align 合并逻辑 (2026-08-15)
+    # ------------------------------------------------------------------ #
+    def _ba_detect_frame(self, frame) -> dict:
+        """单帧检测，使用 ba_detector（支持颜色过滤），返回稳定结果或 None。"""
+        candidates = self.ba_detector.detect_all(frame)
+
+        # 当检测到多个同色候选时，记录选择逻辑（帮助调试）
+        if len(candidates) > 1:
+            x_values = [c["pos_3d"][0] for c in candidates]
+            self.get_logger().info(
+                f"[block_align] 检测到 {len(candidates)} 个候选色块，X_cam 值={x_values}，"
+                f"将锁定最右边的 (X_cam={max(x_values):.1f}mm)"
+            )
+
+        self.tracker.update(candidates)
+
+        if self.cv_show:
+            locked = self.tracker.get_current_target()
+            draw = locked if locked is not None else (candidates[0] if candidates else None)
+            vis = self.ba_detector.visualize(frame.copy(), draw)
+            cv2.putText(vis, "BLOCK_ALIGNING", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            cv2.imshow("arm_cam", vis)
+            cv2.waitKey(1)
+
+        return self.tracker.get_stable_target()
+
+    def _ba_is_cmd_vel_zero(self) -> bool:
+        """判断 pose_controller 是否已停止运动（复用 motion_waiter 逻辑）。"""
+        now = time.monotonic()
+        started = self._ba_cmdvel_motion_started
+
+        # 兜底：发出指令后超过 motion_stop_timeout_s 仍未检测到运动，视为已完成
+        if (not started
+                and self._ba_last_move_time > 0.0
+                and now - self._ba_last_move_time > self._motion_stop_timeout_s):
+            if not self._ba_move_ignored_warned:
+                self.get_logger().warning(
+                    "[block_align] 运动指令 %.1fs 内未见非零 cmd_vel，按已完成放行" %
+                    self._motion_stop_timeout_s)
+                self._ba_move_ignored_warned = True
+            return True
+
+        # 检查 motion_waiter 是否已停止
+        return self._motion_waiter.is_stopped()
+
+    def _ba_check_motion_watchdog(self) -> bool:
+        """运动链路看门狗：检查 /cmd_vel 或 /leg_odom2 是否超时未更新。"""
+        if not self._ba_phase_busy:
+            return False
+
+        now = time.monotonic()
+        elapsed = now - self._ba_last_pipeline_healthy_time
+
+        if elapsed > self.block_align_watchdog_timeout:
+            self.get_logger().error(
+                f"[block_align] 运动链路看门狗触发：{elapsed:.1f}s 未收到更新，"
+                f"pose_controller 可能异常")
+            return True
+
+        return False
+
+    def _ba_send_move(self, x: float, y: float, theta_deg: float):
+        """发布 /move 指令（block_align 阶段）。"""
+        msg = Pose2D()
+        msg.x = float(x)
+        msg.y = float(y)
+        msg.theta = float(theta_deg)
+        self._move_pub.publish(msg)
+        self._ba_cmdvel_motion_started = False
+        self._ba_last_move_time = time.monotonic()
+        self._ba_move_ignored_warned = False
+        self._ba_last_pipeline_healthy_time = time.monotonic()
+        self.get_logger().info(
+            "[block_align] 发布 /move  x=%.3f  y=%.3f  theta=%.1f°" % (x, y, theta_deg))
+
+    def _ba_reset_pose_controller(self):
+        """重置 pose_controller（发送 cancel 命令）。"""
+        self._cmd_pub.publish(String(data="cancel"))
+        self.get_logger().warning("[block_align] 发送 cancel 命令重置 pose_controller")
+        time.sleep(1.0)  # 恢复等待
+        self._ba_cmdvel_motion_started = False
+        self._ba_move_ignored_warned = False
+        self._ba_last_pipeline_healthy_time = time.monotonic()
+
+    def _do_block_align_wait_detect(self) -> dict:
+        """block_align 等待检测阶段：多帧检测直到稳定或超时。"""
+        deadline = time.monotonic() + self.block_align_detect_timeout
+
+        self.get_logger().info(
+            f"[block_align] 开始色块检测，超时 {self.block_align_detect_timeout:.1f}s"
+            + (f"（目标颜色={self.target_color}）" if self.target_color else ""))
+
+        while time.monotonic() < deadline:
+            if self._check_estop():
+                return None
+
+            ret, frame = self.arm_cam.read()
+            if not ret:
+                self.get_logger().warning("[block_align] 摄像头读帧失败，跳过")
+                continue
+
+            stable = self._ba_detect_frame(frame)
+            if stable is None:
+                continue
+
+            # 确保锁定最右边的目标（防止多个同色方块时锁定错误）
+            all_candidates = self.ba_detector.detect_all(frame)
+            if len(all_candidates) >= 2:
+                rightmost = max(all_candidates, key=lambda r: r["pos_3d"][0])
+                if stable["pos_3d"][0] < rightmost["pos_3d"][0] - 5.0:  # 5mm 容差
+                    self.get_logger().info(
+                        f"[block_align] 检测到更右的目标 ({rightmost['pos_3d'][0]:.1f}mm > "
+                        f"{stable['pos_3d'][0]:.1f}mm)，重新锁定")
+                    # 重建 tracker 并锁定最右的
+                    cfg_g = self.cfg["grasp"]
+                    self.tracker = TargetTracker(
+                        avg_window=int(cfg_g["distance_avg_window"]),
+                        lost_frames_max=int(cfg_g["lost_frames_max"]),
+                    )
+                    self.tracker.update([rightmost])
+                    continue
+
+            X_cam, Y_cam, _ = stable["pos_3d"]
+            self.get_logger().info(
+                f"[block_align] 色块稳定锁定: X_cam={X_cam:.1f}mm  Y_cam={Y_cam:.1f}mm  "
+                f"dist={stable['distance_mm']:.1f}mm")
+            return stable
+
+        self.get_logger().warning(
+            f"[block_align] 检测超时（{self.block_align_detect_timeout:.1f}s），未检测到色块")
+        return None
+
+    def _do_block_align_lateral(self, stable: dict) -> bool:
+        """block_align 横向对齐阶段。"""
+        self._ba_lat_rounds = 0
+        self._ba_phase_busy = False
+        self._ba_settle_tracker_ready = False
+
+        max_rounds = self.block_align_max_rounds
+        thr_mm = self.block_align_lat_thr_mm
+
+        for round_i in range(max_rounds):
+            if self._check_estop():
+                return False
+
+            X_cam = stable["pos_3d"][0]
+
+            if abs(X_cam) <= thr_mm:
+                self.get_logger().info(
+                    f"[block_align] 横向对齐完成: X_cam={X_cam:.1f}mm (阈值={thr_mm}mm)")
+                return True
+
+            # 发布横向移动
+            y_move = self.block_align_lat_polarity * X_cam / 1000.0
+            self.get_logger().info(
+                f"[block_align] 横向对齐轮次 {round_i + 1}: X_cam={X_cam:.1f}mm → y={y_move:.3f}m")
+
+            self._motion_waiter.reset()
+            self._ba_send_move(0.0, y_move, 0.0)
+            self._ba_phase_busy = True
+
+            # 等待运动完成
+            while not self._ba_is_cmd_vel_zero():
+                if self._ba_check_motion_watchdog():
+                    self._ba_reset_pose_controller()
+                    self._ba_phase_busy = False
+                    break
+                time.sleep(0.1)
+
+            if not self._motion_waiter.wait_for_stop():
+                self.get_logger().error("[block_align] 等待横向到位超时")
+                return False
+
+            # 运动停止后重新检测
+            if not self._ba_settle_tracker_ready:
+                cfg_g = self.cfg["grasp"]
+                self.tracker = TargetTracker(
+                    avg_window=int(cfg_g["distance_avg_window"]),
+                    lost_frames_max=int(cfg_g["lost_frames_max"]),
+                )
+                self._ba_settle_tracker_ready = True
+
+            new_stable = self._detect_stable()
+            if new_stable is None:
+                self.get_logger().error("[block_align] 对齐后重新识别失败")
+                return False
+
+            stable.update(new_stable)
+            self._ba_phase_busy = False
+
+        self.get_logger().error(
+            f"[block_align] 横向对齐超过最大轮次 ({max_rounds})，X_cam={stable['pos_3d'][0]:.1f}mm")
+        return False
+
+    def _do_block_align_approach(self, stable: dict) -> bool:
+        """block_align 前进接近阶段。"""
+        self._ba_app_rounds = 0
+        self._ba_phase_busy = False
+        self._ba_settle_tracker_ready = False
+
+        max_rounds = self.block_align_max_rounds
+        target_dist = self.block_align_target_dist
+        dist_thr = self.block_align_dist_thr
+
+        for round_i in range(max_rounds):
+            if self._check_estop():
+                return False
+
+            Y_cam = stable["pos_3d"][1]  # mm
+            dist_m = Y_cam / 1000.0
+            delta = dist_m - target_dist
+
+            if abs(delta) <= dist_thr:
+                self.get_logger().info(
+                    f"[block_align] 前进接近完成: Y_cam={Y_cam:.1f}mm  dist={dist_m:.3f}m")
+                return True
+
+            # 阻尼 + 限幅
+            damped_delta = delta * 0.7
+            damped_delta = max(-0.15, min(0.15, damped_delta))
+
+            if abs(damped_delta) < 0.02:
+                self.get_logger().info(
+                    f"[block_align] 前进接近完成（剩余误差 {delta:.3f}m < 2cm）")
+                return True
+
+            self.get_logger().info(
+                f"[block_align] 前进接近轮次 {round_i + 1}: Y_cam={Y_cam:.1f}mm  "
+                f"delta={delta:.3f}m → 阻尼后={damped_delta:.3f}m")
+
+            self._motion_waiter.reset()
+            self._ba_send_move(damped_delta, 0.0, 0.0)
+            self._ba_phase_busy = True
+
+            # 等待运动完成
+            while not self._ba_is_cmd_vel_zero():
+                if self._ba_check_motion_watchdog():
+                    self._ba_reset_pose_controller()
+                    self._ba_phase_busy = False
+                    break
+                time.sleep(0.1)
+
+            if not self._motion_waiter.wait_for_stop():
+                self.get_logger().error("[block_align] 等待前进到位超时")
+                return False
+
+            # 运动停止后重新检测
+            if not self._ba_settle_tracker_ready:
+                cfg_g = self.cfg["grasp"]
+                self.tracker = TargetTracker(
+                    avg_window=int(cfg_g["distance_avg_window"]),
+                    lost_frames_max=int(cfg_g["lost_frames_max"]),
+                )
+                self._ba_settle_tracker_ready = True
+
+            new_stable = self._detect_stable()
+            if new_stable is None:
+                self.get_logger().error("[block_align] 接近后重新识别失败")
+                return False
+
+            stable.update(new_stable)
+            self._ba_phase_busy = False
+
+        self.get_logger().error(
+            f"[block_align] 前进接近超过最大轮次 ({max_rounds})，dist={dist_m:.3f}m")
+        return False
+
+    # ------------------------------------------------------------------ #
     # 接近与抓取
     # ------------------------------------------------------------------ #
     def _approach_and_grasp(self, stable: dict) -> bool:
@@ -635,10 +959,10 @@ class GraspTaskNode(Node):
             return False
 
     # ------------------------------------------------------------------ #
-    # 8-phase 状态机
+    # 8-phase 状态机（2026-08-15: 增加 BLOCK_ALIGNING 阶段）
     # ------------------------------------------------------------------ #
     def run_state_machine(self):
-        """主线程运行的 8-phase 抓取流程。"""
+        """主线程运行的抓取流程，合并 block_align 逻辑。"""
         self._publish_state("INIT")
 
         if not self.dry_run and self.arm is not None:
@@ -651,12 +975,53 @@ class GraspTaskNode(Node):
         if self._check_estop():
             return self._fail("ESTOP")
 
-        # phase_2: detect
+        # ── 新增: BLOCK_ALIGNING 阶段 ────────────────────────────────────
+        if self.enable_block_align:
+            self._publish_state("BLOCK_ALIGNING")
+            try:
+                self._ensure_arm_cam_open()
+            except Exception as e:
+                return self._fail(f"CAM_OPEN_FAILED:{e}")
+
+            # 重置 tracker（用于 block_align 检测）
+            cfg_g = self.cfg["grasp"]
+            self.tracker = TargetTracker(
+                avg_window=int(cfg_g["distance_avg_window"]),
+                lost_frames_max=int(cfg_g["lost_frames_max"]),
+            )
+            self._ba_last_pipeline_healthy_time = time.monotonic()
+
+            # 1) 等待检测
+            stable = self._do_block_align_wait_detect()
+            if stable is None:
+                self.get_logger().warning(
+                    "[block_align] 检测超时，跳过对齐，直接进入抓取阶段")
+                # 不报错，允许盲抓
+            else:
+                # 2) 横向对齐
+                if not self._do_block_align_lateral(stable):
+                    return self._fail("BLOCK_ALIGN_LATERAL_FAILED")
+
+                # 3) 前进接近
+                if not self._do_block_align_approach(stable):
+                    return self._fail("BLOCK_ALIGN_APPROACH_FAILED")
+
+            self.get_logger().info("[block_align] 对齐完成，进入检测抓取阶段")
+
+        # ── phase_2: detect ──────────────────────────────────────────────
         self._publish_state("DETECTING")
         try:
             self._ensure_arm_cam_open()
         except Exception as e:
             return self._fail(f"CAM_OPEN_FAILED:{e}")
+
+        # 重置 tracker（用于精确抓取检测，不使用颜色过滤）
+        cfg_g = self.cfg["grasp"]
+        self.tracker = TargetTracker(
+            avg_window=int(cfg_g["distance_avg_window"]),
+            lost_frames_max=int(cfg_g["lost_frames_max"]),
+        )
+
         stable = self._detect_stable()
         if stable is None:
             return self._fail("DETECT_TIMEOUT")

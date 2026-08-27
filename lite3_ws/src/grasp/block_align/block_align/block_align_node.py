@@ -622,10 +622,23 @@ class BlockAlignNode(Node):
 
         # 阻尼系数：只走误差的 70%，防止 pose_controller 超调
         damped_delta = delta * 0.7
-        # 限幅：单次前进最大 15cm，防止晃出视野
-        damped_delta = max(-0.15, min(0.15, damped_delta))
+
+        # 限幅策略：第一次前进不限幅，允许大步快速接近；后续轮次限幅 15cm，防止晃出视野
+        if self._app_rounds == 1:
+            # 第一次前进：不限幅，直接使用阻尼后的值
+            final_delta = damped_delta
+            self.get_logger().info(
+                "approach 轮次 1（首次，不限幅）: Y_cam=%.1fmm  delta=%.3fm → 阻尼后=%.3fm" % (
+                    Y_cam, delta, final_delta))
+        else:
+            # 后续轮次：限幅最大 15cm，保持视野稳定
+            final_delta = max(-0.15, min(0.15, damped_delta))
+            self.get_logger().info(
+                "approach 轮次 %d: Y_cam=%.1fmm  delta=%.3fm → 阻尼+限幅后=%.3fm" % (
+                    self._app_rounds, Y_cam, delta, final_delta))
+
         # 最小步长：小于 2cm 不走了，直接认为到位
-        if abs(damped_delta) < 0.02:
+        if abs(final_delta) < 0.02:
             self.get_logger().info(
                 "approach 完成（剩余误差 %.3fm < 2cm 阈值）: Y_cam=%.1fmm  dist=%.3fm" % (
                     delta, Y_cam, dist_m))
@@ -634,11 +647,8 @@ class BlockAlignNode(Node):
                 self._state = STATE_DONE
             return
 
-        self.get_logger().info(
-            "approach 轮次 %d: Y_cam=%.1fmm  delta=%.3fm → 阻尼+限幅后=%.3fm" % (
-                self._app_rounds, Y_cam, delta, damped_delta))
         # 见 _do_lateral 注释：reset_origin 与 /move 竞态会使 /move 被作废
-        self._send_move(damped_delta, 0.0, 0.0)
+        self._send_move(final_delta, 0.0, 0.0)
         self._phase_busy = True
 
     # ──────────────────────────── 析构 ──────────────────────────────────────── #

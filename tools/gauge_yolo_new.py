@@ -111,7 +111,7 @@ def play_mp3(filepath):
 
 # ===================== 摄像头工具 =====================
 
-def init_camera(camera_id=4, width=640, height=480):
+def init_camera(camera_id=0, width=640, height=480):
     """初始化摄像头并启用自动曝光/白平衡。"""
     subprocess.run(
         ["v4l2-ctl", f"-d/dev/video{camera_id}", "--set-ctrl=exposure_auto=3"],
@@ -276,23 +276,29 @@ class GaugeYOLORecognizer:
         self.device = device
         self.imgsz = imgsz
 
-        bg_pt = self.models_dir / 'best_bg.pt'
-        ptr_pt = self.models_dir / 'best_ptr.pt'
-        bg_engine = self.models_dir / 'best_bg.engine'
-        ptr_engine = self.models_dir / 'best_ptr.engine'
+        bg_pt = self.models_dir / 'gauge_regions_3d.pt'
+        ptr_pt = self.models_dir / 'gauge_pointer_3d_v3.pt'
+        bg_engine = self.models_dir / 'gauge_regions_3d.engine'
+        ptr_engine = self.models_dir / 'gauge_pointer_3d_v3.engine'
 
-        if use_engine:
-            if not bg_engine.is_file():
-                print(f"未找到 {bg_engine}，正在从 {bg_pt} 导出 TensorRT engine ...")
-                YOLO(str(bg_pt)).export(format='engine', device=device, half=True, imgsz=imgsz, workspace=2)
-            if not ptr_engine.is_file():
-                print(f"未找到 {ptr_engine}，正在从 {ptr_pt} 导出 TensorRT engine ...")
-                YOLO(str(ptr_pt)).export(format='engine', device=device, half=True, imgsz=imgsz, workspace=2)
+        # regions 模型：优先 engine，否则 pt
+        if use_engine and bg_engine.is_file():
             bg_path = str(bg_engine)
-            ptr_path = str(ptr_engine)
+            print(f"✓ 使用 TensorRT engine: {bg_engine.name}")
         else:
             bg_path = str(bg_pt)
+            print(f"✓ 使用 PyTorch 模型: {bg_pt.name}")
+
+        # pointer 模型：优先 engine，否则降级到 pt
+        if use_engine and ptr_engine.is_file():
+            ptr_path = str(ptr_engine)
+            print(f"✓ 使用 TensorRT engine: {ptr_engine.name}")
+        else:
             ptr_path = str(ptr_pt)
+            if use_engine:
+                print(f"⚠ 未找到 {ptr_engine.name}，降级使用 PyTorch 模型（速度较慢）")
+            else:
+                print(f"✓ 使用 PyTorch 模型: {ptr_pt.name}")
 
         print("加载 regions 模型...")
         self.model_reg = YOLO(bg_path, task='detect')
@@ -418,7 +424,7 @@ class GaugeYOLORecognizer:
 # ===================== 多线程实时处理 =====================
 
 class AsyncYOLOGaugeProcessor:
-    def __init__(self, camera_id=4, width=640, height=480,
+    def __init__(self, camera_id=0, width=640, height=480,
                  process_interval=0.3, models_dir=DEFAULT_MODELS_DIR,
                  use_engine=True, device=0, imgsz=640,
                  voice_enabled=True, mp3_dir=DEFAULT_MP3_DIR,
@@ -615,7 +621,7 @@ class AsyncYOLOGaugeProcessor:
 
 def main():
     parser = argparse.ArgumentParser(description='YOLOv8 仪表盘识别 Jetson 版')
-    parser.add_argument('--camera', type=int, default=6, help='摄像头编号，默认 6')
+    parser.add_argument('--camera', type=int, default=0, help='摄像头编号，默认 0')
     parser.add_argument('--width', type=int, default=640)
     parser.add_argument('--height', type=int, default=480)
     parser.add_argument('--models-dir', type=str, default=str(DEFAULT_MODELS_DIR),

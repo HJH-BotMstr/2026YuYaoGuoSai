@@ -23,7 +23,7 @@ abcd_task_node:
     # ─── 话题名（保持默认即可，暴露参数便于遥控/重映射）─────────────────
     topic_apriltag_start: "/apriltag_place1/start"
     topic_apriltag_done:  "/apriltag_place1/done"
-    topic_block_align:    "/block_align/start"
+    topic_block_align:    "/grasp/start"
     topic_grasp_state:    "/grasp/state"
     topic_grasp_result:   "/grasp/result"
     topic_grasp_place:    "/grasp/place"
@@ -36,11 +36,7 @@ abcd_task_node:
     apriltag_set_param_service:      "/apriltag_place1_node/set_parameters"
     apriltag_set_param_timeout_s:    5.0
 
-    # ─── block_align 子进程 ──────────────────────────────────────────
-    block_align_package:    "block_align"
-    block_align_executable: "block_align_node"
-    # 留空则用 get_package_share_directory('block_align')/config/block_align.yaml
-    block_align_params_file: ""
+  
 
     # ─── 放置命令连发窗口（覆盖订阅竞争）──────────────────────────────
     place_signal_rate_hz:     2.0

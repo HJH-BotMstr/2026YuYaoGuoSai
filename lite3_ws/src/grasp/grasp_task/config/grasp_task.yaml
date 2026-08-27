@@ -29,6 +29,17 @@ grasp_task:
     max_rounds: 1
     inter_round_wait_s: 0.5
 
-    # ─── 横向对齐开关 ────────────────────────────────────────────────
-    # 启用后，在抓取前会执行横向移动对齐；关闭后跳过横向对齐直接抓取
+    # ─── 横向对齐开关（已废弃，合并 block_align 后不再使用）────────────
+    # 保留参数以兼容旧代码，实际对齐逻辑在 block_align 阶段执行
     enable_lateral_align: false
+
+    # ─── 2026-08-15: block_align 合并参数 ────────────────────────────
+    enable_block_align: true                # 是否启用 block_align 阶段（合并后的视觉对齐）
+    block_align_target_distance_m: 0.25     # block_align 目标停止距离
+    block_align_lateral_threshold_mm: 15.0  # 横向对齐阈值（X_cam 偏差死区）
+    block_align_distance_threshold_m: 0.02  # 前进距离阈值
+    block_align_max_rounds: 5               # 对齐最大轮次
+    block_align_detect_timeout_s: 15.0      # 检测超时
+    block_align_lateral_polarity: -1        # 横向极性（-1: 偏右时向右移）
+    block_align_motion_watchdog_s: 3.0      # 运动链路看门狗超时
+    target_color: ""                        # 目标颜色过滤 "red"/"green"/"" (空=检测所有颜色)

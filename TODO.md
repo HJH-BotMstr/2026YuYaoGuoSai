@@ -25,3 +25,20 @@
 | 2026-08-01 | 全员 | 能基本跑完完整路线 |
 
 
+cd ~/2026YuYaoGuoSai/lite3_ws
+source /opt/ros/foxy/setup.bash
+source install/setup.bash
+ros2 run pose_control start_pose_control
+
+
+cd ~/2026YuYaoGuoSai
+source /opt/ros/foxy/setup.bash
+source install/setup.bash
+python3 tools/way_point.py broadcast tools/waypoints.json
+
+cd ~/2026YuYaoGuoSai       
+source /opt/ros/foxy/setup.bash
+python3 tools/main_task_light.py  
+python3 tools/main_task_light.py  
+python3 tools/way_point.py record tools/waypoints1.json
+

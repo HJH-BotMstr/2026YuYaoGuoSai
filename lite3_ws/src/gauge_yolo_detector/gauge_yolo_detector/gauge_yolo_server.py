@@ -4,7 +4,7 @@
 ROS2 服务节点：YOLOv8 仪表盘识别。
 
 与纯 CV 版节点 gauge_detector 区分开，本节点使用 YOLOv8 双模型：
-  - best_bg.engine / best_ptr.engine（TensorRT 加速）
+  - gauge_regions_3d.engine / gauge_pointer_3d_v3.engine（TensorRT 加速）
 
 节点启动时完成：
   1. 加载 regions 模型
@@ -30,9 +30,9 @@ from rclpy.node import Node
 
 from gauge_detector_interfaces.srv import GaugeDetect
 
-# 复用 tools/gauge_yolo_new.py 中验证过的函数和类
+# 复用 tools/gauge_yolo_new_v2.py 中验证过的函数和类
 sys.path.insert(0, '/home/ysc/2026YuYaoGuoSai/tools')
-from gauge_yolo_new import (
+from gauge_yolo_new_v2 import (
     PYTESSERACT_AVAILABLE,
     GaugeYOLORecognizer,
     clear_buffer,
@@ -72,7 +72,7 @@ class GaugeYoloServerNode(Node):
         super().__init__('gauge_yolo_server')
 
         # ========== 参数声明 ==========
-        self.declare_parameter('camera_id', 6)
+        self.declare_parameter('camera_id', 0)
         self.declare_parameter('width', 640)
         self.declare_parameter('height', 480)
         self.declare_parameter('preheat_frames', 80)
@@ -80,6 +80,8 @@ class GaugeYoloServerNode(Node):
         self.declare_parameter('use_engine', True)
         self.declare_parameter('device', 0)
         self.declare_parameter('imgsz', 640)
+        self.declare_parameter('thr_high', 41.0)
+        self.declare_parameter('thr_low', 145.0)
         self.declare_parameter('voice_enabled', True)
         self.declare_parameter('mp3_dir', '/home/ysc/2026YuYaoGuoSai/assets/mp3')
         self.declare_parameter('letter_skip', 1)
@@ -96,6 +98,8 @@ class GaugeYoloServerNode(Node):
         use_engine = self.get_parameter('use_engine').value
         device = self.get_parameter('device').value
         imgsz = self.get_parameter('imgsz').value
+        thr_high = self.get_parameter('thr_high').value
+        thr_low = self.get_parameter('thr_low').value
         voice_enabled = self.get_parameter('voice_enabled').value
         mp3_dir = self.get_parameter('mp3_dir').value
         self.letter_skip = self.get_parameter('letter_skip').value
@@ -113,6 +117,8 @@ class GaugeYoloServerNode(Node):
                 use_engine=use_engine,
                 device=device,
                 imgsz=imgsz,
+                thr_high=thr_high,
+                thr_low=thr_low,
             )
             self.get_logger().info('✓ 全部加载完成')
         except Exception as e:

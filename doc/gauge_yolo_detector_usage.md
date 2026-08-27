@@ -15,27 +15,35 @@ tags: [ros2, yolo, gauge, service, jetson]
 | 包名 | `gauge_detector` | `gauge_yolo_detector` |
 | 节点名 | `gauge_server` | `gauge_yolo_server` |
 | 服务名 | `/detect_gauge` | `/detect_gauge_yolo` |
-| 实现方式 | 霍夫圆 + 颜色阈值 | `best_bg.engine` + `best_ptr.engine` |
+| 实现方式 | 霍夫圆 + 颜色阈值 | `gauge_regions_3d.engine` + `gauge_pointer_3d_v3.engine` |
 
 ## 1. 前置条件
 
 - Jetson Xavier NX 已刷 JetPack 5.1.2，ROS 2 Foxy 已安装
 - 已创建 YOLO 虚拟环境并安装依赖（PyTorch、ultralytics、TensorRT 等）
 - 模型文件已到位：
-  - `/home/ysc/2026YuYaoGuoSai/assets/models/best_bg.engine`
-  - `/home/ysc/2026YuYaoGuoSai/assets/models/best_ptr.engine`
+  - `/home/ysc/2026YuYaoGuoSai/assets/models/gauge_regions_3d.engine`
+  - `/home/ysc/2026YuYaoGuoSai/assets/models/gauge_pointer_3d_v3.engine`
 - 语音文件已到位：
   - `/home/ysc/2026YuYaoGuoSai/assets/mp3/AL.mp3 ~ DM.mp3`
 
-如果还没有 `.engine` 文件，可用 `tools/yolo/export_engine.py` 在 Jetson 上从 `.pt` 导出：
+如果还没有 `.engine` 文件，在 Jetson 上生成（engine 不跨设备，必须本机生成）：
 
 ```bash
 source ~/yolov8_env/bin/activate
-python /home/ysc/2026YuYaoGuoSai/tools/yolo/export_engine.py \
-  /home/ysc/2026YuYaoGuoSai/assets/models/best_bg.pt --workspace 2
 
-python /home/ysc/2026YuYaoGuoSai/tools/yolo/export_engine.py \
-  /home/ysc/2026YuYaoGuoSai/assets/models/best_ptr.pt --workspace 2
+# regions（detect 模型）：直接从 .pt 导出
+python /home/ysc/2026YuYaoGuoSai/tools/export_engine.py \
+  /home/ysc/2026YuYaoGuoSai/assets/models/gauge_regions_3d.pt --workspace 2
+
+# pointer（pose 模型）：8.1.0 导不出 pose，需在训练电脑上导出 .onnx，
+# 拷到狗上后用 trtexec 转 engine，再补 ultralytics 元数据头
+/usr/src/tensorrt/bin/trtexec \
+  --onnx=gauge_pointer_3d_v3.onnx \
+  --saveEngine=gauge_pointer_3d_v3.engine \
+  --fp16 --workspace=4096
+python /home/ysc/2026YuYaoGuoSai/tools/engine_add_metadata.py \
+  gauge_pointer_3d_v3.engine --task pose --names pointer --kpt-shape 2 3
 ```
 
 ## 2. 编译
@@ -57,8 +65,8 @@ ros2 run gauge_yolo_detector gauge_yolo_server
 
 启动后节点会依次完成：
 
-1. 加载 `best_bg.engine` 和 `best_ptr.engine`（最耗时，约 30~60 秒）
-2. 初始化 `/dev/video4`
+1. 加载 `gauge_regions_3d.engine` 和 `gauge_pointer_3d_v3.engine`（最耗时，约 30~60 秒）
+2. 初始化 `/dev/video0`
 3. 预热 80 帧
 4. 创建 `/detect_gauge_yolo` 服务
 
@@ -102,7 +110,7 @@ gauge_detector_interfaces.srv.GaugeDetect_Response(
 
 | 参数名 | 默认值 | 说明 |
 |---|---|---|
-| `camera_id` | `4` | 摄像头编号，对应 `/dev/video4` |
+| `camera_id` | `0` | 摄像头编号，对应 `/dev/video0` |
 | `width` | `640` | 采集宽度 |
 | `height` | `480` | 采集高度 |
 | `preheat_frames` | `80` | 启动时丢弃的预热帧数 |
@@ -110,6 +118,8 @@ gauge_detector_interfaces.srv.GaugeDetect_Response(
 | `use_engine` | `true` | 是否优先使用 TensorRT `.engine` |
 | `device` | `0` | GPU 编号 |
 | `imgsz` | `640` | YOLO 推理尺寸 |
+| `thr_high` | `41.0` | 偏高/居中边界（相对角度，双侧对称），按 0.7MPa 校准 |
+| `thr_low` | `145.0` | 居中/偏低边界（相对角度），按 0.3MPa 校准 |
 | `voice_enabled` | `true` | 是否启用语音播报 |
 | `mp3_dir` | `/home/ysc/2026YuYaoGuoSai/assets/mp3` | MP3 文件目录 |
 | `voice_on_change_only` | `true` | 是否只在状态变化时播报 |
